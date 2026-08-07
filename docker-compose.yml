@@ -1,0 +1,25 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: relpmas/Dockerfile
+      target: dev
+    ports:
+      # Host port 5176, not 5173: bruit-kit's own dev container already
+      # reserves 5173 on the host, granular_midi uses 5174, and
+      # grid-sequencer uses 5175 -- same "avoid a collision with siblings
+      # that might be running at once" reasoning.
+      - "5176:5173"
+    volumes:
+      - .:/workspace/relpmas
+      # Anonymous volume so the container's own node_modules (installed for
+      # Linux, and holding the file: symlink to bruit-kit -- see below)
+      # isn't shadowed by the host bind mount above.
+      - /workspace/relpmas/node_modules
+      # Sibling package (package.json depends on it via
+      # "file:../bruit-kit", relative to /workspace/relpmas) -- read-only
+      # since this container only consumes it, never builds it. bruit-kit
+      # owns its own Docker setup (see ../bruit-kit/Makefile); `make up`
+      # here shells into it first (see this project's Makefile) so dist/
+      # is fresh before this container starts.
+      - ../bruit-kit:/workspace/bruit-kit:ro
