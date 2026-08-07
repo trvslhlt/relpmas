@@ -1,0 +1,557 @@
+import {
+  type BuiltEffectsChain,
+  DRIFT_TICK_MS,
+  type EffectSpec,
+  type TriggerableModulator,
+  buildEffectsChain,
+  createTriggerableModulator,
+  curvePositionAtElapsed,
+  lerpFactorFor,
+  retargetDelayMsFor,
+  sampleCurveAt,
+  scheduleAutomation,
+} from "bruit-kit/audio";
+import { DirectionalSamplePlayer } from "bruit-kit/sources";
+import type { WaveformRange } from "bruit-kit/ui";
+import type { MotionConfig, SampleNode } from "./sampleNode";
+
+/** Two granularities: triggerStart/triggerEnd span a whole firing burst;
+ * fireStart/fireEnd are per individual fire, for cascades that should
+ * respond to each bounce. */
+export type NodeEventType =
+  | "triggerStart"
+  | "triggerEnd"
+  | "fireStart"
+  | "fireEnd";
+
+export interface GraphEdge {
+  id: string;
+  fromNodeId: string;
+  fromEvent: NodeEventType;
+  toNodeId: string;
+}
+
+interface WanderState {
+  current: number;
+  wanderTarget: number;
+  nextRetargetAt: number;
+}
+
+interface NodeRuntime {
+  armed: boolean;
+  nextTriggerAt: number | null;
+  nextAlternatingDirection: "forward" | "backward";
+  positionWander: WanderState | null;
+  lengthWander: WanderState | null;
+  liveRange: WaveformRange;
+}
+
+/** A node's own audio path: its dedicated DirectionalSamplePlayer (voices
+ * fire through this, not a shared one -- see the class doc below for why
+ * each node needs its own instance) -> its own effect chain -> the shared
+ * mix bus. */
+interface NodeAudio {
+  player: DirectionalSamplePlayer;
+  chain: BuiltEffectsChain;
+  /** Lazily created the first time this node triggers with
+   * modulationRoute.useModulator set -- see triggerModulationRoute. */
+  modulator: TriggerableModulator | null;
+  modulatorConnectedTo: AudioParam | null;
+}
+
+/** Owns the loaded buffer, every SampleNode, and the single shared
+ * scheduler tick that drives loop-mode triggering and range motion (see
+ * PLAN's "Core model" -- arm -> trigger -> fire, and range motion's
+ * position/length scalars). No graph/modulation-route support yet (later
+ * PLAN steps build directly on this same engine rather than replacing it
+ * -- fire() is already the one place a node's *current* range gets read
+ * and handed to its player).
+ *
+ * Each node gets its own DirectionalSamplePlayer + BuiltEffectsChain pair,
+ * not one shared player for every node: a player mixes all its own voices
+ * into a single output *inside the worklet*, so there's no way to split
+ * that back out into per-node signals afterward -- per-node effect chains
+ * (PLAN step 8) need the split to happen before mixing, not after. Every
+ * node's chain output joins the one shared mixBus, which is what
+ * `.output` exposes onward to a master bus. */
+export class SampleNodeEngine {
+  private readonly mixBus: GainNode;
+  private readonly nodes = new Map<string, SampleNode>();
+  private readonly runtime = new Map<string, NodeRuntime>();
+  private readonly audio = new Map<string, NodeAudio>();
+  private readonly edges = new Map<string, GraphEdge>();
+  private buffer: AudioBuffer | null = null;
+  private tickHandle: ReturnType<typeof setInterval> | null = null;
+  private onLiveRangeChange:
+    | ((id: string, range: WaveformRange) => void)
+    | null = null;
+  private onNodeEventFired:
+    | ((id: string, event: NodeEventType) => void)
+    | null = null;
+  private nextEdgeId = 1;
+
+  constructor(private readonly audioContext: AudioContext) {
+    this.mixBus = audioContext.createGain();
+  }
+
+  get output(): AudioNode {
+    return this.mixBus;
+  }
+
+  get currentTime(): number {
+    return this.audioContext.currentTime;
+  }
+
+  async init(): Promise<void> {
+    this.tickHandle = setInterval(() => this.tick(), DRIFT_TICK_MS);
+  }
+
+  dispose(): void {
+    if (this.tickHandle !== null) clearInterval(this.tickHandle);
+  }
+
+  /** Fires whenever a node's live (possibly motion-moved) range changes --
+   * a host UI typically wires this straight to
+   * multiRangeWaveformView's setLiveOverlay. */
+  onLiveRange(callback: (id: string, range: WaveformRange) => void): void {
+    this.onLiveRangeChange = callback;
+  }
+
+  /** Fires whenever any node's triggerStart/triggerEnd/fireStart/fireEnd
+   * happens -- for UI feedback (e.g. flashing a node in the patch graph)
+   * purely; graph edges are evaluated internally, not by a caller
+   * re-driving trigger() off this callback (see emitEvent's own doc on
+   * why that split matters for timing). */
+  onNodeEvent(callback: (id: string, event: NodeEventType) => void): void {
+    this.onNodeEventFired = callback;
+  }
+
+  addEdge(
+    fromNodeId: string,
+    fromEvent: NodeEventType,
+    toNodeId: string,
+  ): string {
+    const id = `edge-${this.nextEdgeId++}`;
+    this.edges.set(id, { id, fromNodeId, fromEvent, toNodeId });
+    return id;
+  }
+
+  removeEdge(id: string): void {
+    this.edges.delete(id);
+  }
+
+  listEdges(): GraphEdge[] {
+    return [...this.edges.values()];
+  }
+
+  async loadSample(buffer: AudioBuffer): Promise<void> {
+    this.buffer = buffer;
+    await Promise.all(
+      [...this.audio.values()].map((a) => a.player.loadSample(buffer)),
+    );
+  }
+
+  hasSample(): boolean {
+    return this.buffer !== null;
+  }
+
+  /** Async (unlike a plain data-model add) since each node needs its own
+   * worklet node spun up and, if a buffer's already loaded, primed with
+   * it before it can usefully fire. */
+  async addNode(node: SampleNode): Promise<void> {
+    this.nodes.set(node.id, node);
+    this.runtime.set(node.id, {
+      armed: false,
+      nextTriggerAt: null,
+      nextAlternatingDirection: "forward",
+      positionWander: null,
+      lengthWander: null,
+      liveRange: { ...node.range },
+    });
+
+    const player = new DirectionalSamplePlayer(this.audioContext);
+    await player.init();
+    if (this.buffer) await player.loadSample(this.buffer);
+    const chain = buildEffectsChain(this.audioContext, node.effects);
+    player.connect(chain.input);
+    chain.output.connect(this.mixBus);
+    this.audio.set(node.id, {
+      player,
+      chain,
+      modulator: null,
+      modulatorConnectedTo: null,
+    });
+  }
+
+  removeNode(id: string): void {
+    this.nodes.delete(id);
+    this.runtime.delete(id);
+    const audio = this.audio.get(id);
+    if (audio) {
+      audio.player.panic();
+      audio.chain.dispose();
+      this.audio.delete(id);
+    }
+    for (const edge of this.edges.values()) {
+      if (edge.fromNodeId === id || edge.toNodeId === id) {
+        this.edges.delete(edge.id);
+      }
+    }
+  }
+
+  /** Structural effects change (add/remove/reorder/select an effect) --
+   * tears down and rebuilds this node's chain. For a value-only slider
+   * drag, use setNodeEffectsLive instead (see its own doc). */
+  setNodeEffects(id: string, effects: EffectSpec[]): void {
+    const node = this.nodes.get(id);
+    const audio = this.audio.get(id);
+    if (!node || !audio) return;
+    node.effects = effects;
+    audio.player.output.disconnect(audio.chain.input);
+    audio.chain.dispose();
+    const chain = buildEffectsChain(this.audioContext, effects);
+    audio.player.connect(chain.input);
+    chain.output.connect(this.mixBus);
+    audio.chain = chain;
+  }
+
+  /** Value-only nudge (a range field's continuous "input" events) -- never
+   * rebuilds the chain, just pushes each effect's own params into its
+   * already-live node via BuiltEffectsChain.setParamsAt, so a drag doesn't
+   * pay a disconnect/reconnect click at 60fps. */
+  setNodeEffectsLive(id: string, effects: EffectSpec[]): void {
+    const node = this.nodes.get(id);
+    const audio = this.audio.get(id);
+    if (!node || !audio) return;
+    node.effects = effects;
+    effects.forEach((spec, i) => audio.chain.setParamsAt(i, spec.params));
+  }
+
+  getNode(id: string): SampleNode | undefined {
+    return this.nodes.get(id);
+  }
+
+  listNodes(): SampleNode[] {
+    return [...this.nodes.values()];
+  }
+
+  updateNode(id: string, patch: Partial<SampleNode>): void {
+    const node = this.nodes.get(id);
+    if (!node) return;
+    Object.assign(node, patch);
+  }
+
+  isArmed(id: string): boolean {
+    return this.runtime.get(id)?.armed ?? false;
+  }
+
+  setArmed(id: string, armed: boolean): void {
+    const runtime = this.runtime.get(id);
+    if (!runtime) return;
+    runtime.armed = armed;
+    runtime.nextTriggerAt = armed ? this.audioContext.currentTime : null;
+  }
+
+  getLiveRange(id: string): WaveformRange | undefined {
+    return this.runtime.get(id)?.liveRange;
+  }
+
+  /** One trigger cycle: starts the node's firing pattern (a single fire,
+   * or a curve-spaced burst of `fireCount`, each spaced by `intervalCurve`
+   * remapped into [intervalMinMs, intervalMaxMs]) -- callable directly
+   * (a manual click) or by the scheduler tick (a loop-armed node's next
+   * due trigger). Each fire reads the range motion's *precisely computed
+   * future* value for curve-driven motion (a pure function of time), or
+   * the current wander snapshot for wander-driven motion (not
+   * predictable ahead of time without simulating the random walk
+   * forward, which isn't worth the complexity here). */
+  trigger(id: string): void {
+    const node = this.nodes.get(id);
+    const runtime = this.runtime.get(id);
+    const audio = this.audio.get(id);
+    if (!node || !runtime || !audio || !this.buffer) return;
+
+    const now = this.audioContext.currentTime;
+    const count =
+      node.firingPattern === "single" ? 1 : Math.max(1, node.fireCount);
+    const rate = 2 ** (node.rateSemitones / 12);
+
+    this.emitEvent(id, "triggerStart");
+
+    let fireTime = now;
+    let lastFireEndTime = now;
+    for (let i = 0; i < count; i++) {
+      if (i > 0) {
+        const t = count > 1 ? i / (count - 1) : 0;
+        const gapMs = sampleCurveAt(node.intervalCurve, t, {
+          min: node.intervalMinMs,
+          max: node.intervalMaxMs,
+        });
+        fireTime += Math.max(0, gapMs) / 1000;
+      }
+      const range = this.rangeAtTime(node, runtime, fireTime);
+      const direction = this.resolveDirection(node, runtime);
+      audio.player.playVoice({
+        startFraction: range.start,
+        endFraction: range.end,
+        direction,
+        fadeMs: node.fadeMs,
+        rateSemitones: node.rateSemitones,
+        time: fireTime,
+      });
+
+      const durationSeconds =
+        ((range.end - range.start) * this.buffer.duration) / rate;
+      const fireEndTime = fireTime + durationSeconds;
+      lastFireEndTime = fireEndTime;
+      this.scheduleEvent(id, "fireStart", fireTime - now);
+      this.scheduleEvent(id, "fireEnd", fireEndTime - now);
+    }
+    this.scheduleEvent(id, "triggerEnd", lastFireEndTime - now);
+
+    this.triggerModulationRoute(node, audio, now);
+  }
+
+  /** Schedules a UI-feedback-and-graph-evaluation event `delaySeconds` from
+   * now via a plain JS timer -- not sample-accurate (ordinary setTimeout
+   * jitter), which is fine for this: it drives cascading triggers and
+   * on-screen flashes, not the audio itself (each fire's actual sound is
+   * already scheduled sample-accurately on the DirectionalSamplePlayer via
+   * its own `time` argument, independent of this). */
+  private scheduleEvent(
+    id: string,
+    event: NodeEventType,
+    delaySeconds: number,
+  ): void {
+    setTimeout(
+      () => this.emitEvent(id, event),
+      Math.max(0, delaySeconds * 1000),
+    );
+  }
+
+  /** Notifies the UI callback, then walks outgoing graph edges for this
+   * exact (nodeId, event) pair and triggers every target -- a cascade can
+   * itself schedule further cascades (a chain of nodes triggering each
+   * other), each one independently timed off its own fires the same way. */
+  private emitEvent(id: string, event: NodeEventType): void {
+    this.onNodeEventFired?.(id, event);
+    for (const edge of this.edges.values()) {
+      if (edge.fromNodeId === id && edge.fromEvent === event) {
+        this.trigger(edge.toNodeId);
+      }
+    }
+  }
+
+  /** Fires once per trigger (not per fire -- see ModulationRoute's own doc):
+   * either ramps the target AudioParam directly, or (useModulator) ramps a
+   * lazily-created TriggerableModulator's own rate/depth while it
+   * continuously modulates the target. A target that doesn't resolve
+   * (index out of range, or targetParamKey isn't an AudioParam on that
+   * effect instance -- both realistic given targetParamKey is free-typed
+   * in the UI) is silently skipped rather than throwing, same tolerance
+   * BuiltEffectsChain.getAudioParam itself documents. */
+  private triggerModulationRoute(
+    node: SampleNode,
+    audio: NodeAudio,
+    atTime: number,
+  ): void {
+    const route = node.modulationRoute;
+    if (!route.enabled) return;
+    const target = audio.chain.getAudioParam(
+      route.targetEffectIndex,
+      route.targetParamKey,
+    );
+    if (!target) return;
+
+    if (!route.useModulator) {
+      scheduleAutomation(
+        target,
+        route.curvePoints,
+        this.audioContext,
+        route.durationSeconds,
+        { min: route.valueMin, max: route.valueMax },
+        atTime,
+      );
+      return;
+    }
+
+    if (!audio.modulator) {
+      audio.modulator = createTriggerableModulator(this.audioContext);
+    }
+    if (audio.modulatorConnectedTo !== target) {
+      audio.modulator.connect(target);
+      audio.modulatorConnectedTo = target;
+    }
+    scheduleAutomation(
+      audio.modulator.rateParam,
+      route.curvePoints,
+      this.audioContext,
+      route.durationSeconds,
+      { min: route.valueMin, max: route.valueMax },
+      atTime,
+    );
+    scheduleAutomation(
+      audio.modulator.depthParam,
+      route.depthCurvePoints,
+      this.audioContext,
+      route.durationSeconds,
+      { min: route.depthMin, max: route.depthMax },
+      atTime,
+    );
+  }
+
+  /** Immediate, direct fire -- bypasses arm/trigger/firing-pattern
+   * entirely, always exactly one fire using whatever range is live right
+   * now. Kept distinct from trigger() for callers (like the UI's per-node
+   * "Fire" escape hatch) that want a guaranteed single sound regardless
+   * of the node's own configured firing pattern. */
+  fireNow(id: string): number | null {
+    const node = this.nodes.get(id);
+    const runtime = this.runtime.get(id);
+    const audio = this.audio.get(id);
+    if (!node || !runtime || !audio || !this.buffer) return null;
+    const range = runtime.liveRange;
+    const direction = this.resolveDirection(node, runtime);
+    return audio.player.playVoice({
+      startFraction: range.start,
+      endFraction: range.end,
+      direction,
+      fadeMs: node.fadeMs,
+      rateSemitones: node.rateSemitones,
+    });
+  }
+
+  private resolveDirection(
+    node: SampleNode,
+    runtime: NodeRuntime,
+  ): "forward" | "backward" {
+    if (node.direction !== "alternating") return node.direction;
+    const next = runtime.nextAlternatingDirection;
+    runtime.nextAlternatingDirection =
+      next === "forward" ? "backward" : "forward";
+    return next;
+  }
+
+  /** Computes the range motion at an arbitrary (possibly future) time --
+   * curve contributions are exact (curvePositionAtElapsed is a pure
+   * function), wander contributions use the current wander snapshot
+   * regardless of how far `atTime` is from now. */
+  private rangeAtTime(
+    node: SampleNode,
+    runtime: NodeRuntime,
+    atTime: number,
+  ): WaveformRange {
+    const baseLength = node.range.end - node.range.start;
+
+    const start = this.motionValue(
+      node.positionMotion,
+      runtime.positionWander,
+      atTime,
+      node.range.start,
+    );
+    const length = this.motionValue(
+      node.lengthMotion,
+      runtime.lengthWander,
+      atTime,
+      baseLength,
+    );
+
+    const clampedStart = Math.min(1, Math.max(0, start));
+    const clampedLength = Math.min(1 - clampedStart, Math.max(0, length));
+    return { start: clampedStart, end: clampedStart + clampedLength };
+  }
+
+  private motionValue(
+    config: MotionConfig,
+    wander: WanderState | null,
+    atTime: number,
+    fallback: number,
+  ): number {
+    if (config.mode === "none") return fallback;
+    const range = { min: config.min, max: config.max };
+    const curveValue =
+      config.mode === "curve" || config.mode === "both"
+        ? curvePositionAtElapsed(
+            config.curvePoints,
+            atTime,
+            config.curveDurationSeconds,
+            range,
+          )
+        : null;
+    const wanderValue =
+      (config.mode === "wander" || config.mode === "both") && wander
+        ? wander.current
+        : null;
+    if (curveValue !== null && wanderValue !== null) {
+      // "both" sums the two contributions deliberately -- see
+      // MotionConfig's own doc comment. rangeAtTime clamps the final
+      // composed start/length hard against buffer bounds regardless, so
+      // exceeding either contribution alone here is safe.
+      return curveValue + wanderValue - (config.min + config.max) / 2;
+    }
+    return curveValue ?? wanderValue ?? fallback;
+  }
+
+  /** Advances every armed node's range motion and due loop triggers.
+   * Range-motion bookkeeping (wander retarget/glide) mirrors
+   * grid-sequencer's own driftEngine.ts pattern, built on the same
+   * bruit-kit driftMath primitives. */
+  private tick(): void {
+    const now = this.audioContext.currentTime;
+    for (const [id, node] of this.nodes) {
+      const runtime = this.runtime.get(id);
+      if (!runtime) continue;
+
+      this.advanceWander(node.positionMotion, "positionWander", runtime);
+      this.advanceWander(node.lengthMotion, "lengthWander", runtime);
+
+      const nextRange = this.rangeAtTime(node, runtime, now);
+      if (
+        nextRange.start !== runtime.liveRange.start ||
+        nextRange.end !== runtime.liveRange.end
+      ) {
+        runtime.liveRange = nextRange;
+        this.onLiveRangeChange?.(id, nextRange);
+      }
+
+      if (
+        runtime.armed &&
+        node.armMode === "loop" &&
+        runtime.nextTriggerAt !== null &&
+        now >= runtime.nextTriggerAt
+      ) {
+        this.trigger(id);
+        runtime.nextTriggerAt = now + 1 / Math.max(0.01, node.loopFrequencyHz);
+      }
+    }
+  }
+
+  private advanceWander(
+    config: MotionConfig,
+    key: "positionWander" | "lengthWander",
+    runtime: NodeRuntime,
+  ): void {
+    if (config.mode !== "wander" && config.mode !== "both") {
+      runtime[key] = null;
+      return;
+    }
+    const nowMs = Date.now();
+    let state = runtime[key];
+    if (!state) {
+      const mid = (config.min + config.max) / 2;
+      state = {
+        current: mid,
+        wanderTarget: mid,
+        nextRetargetAt: nowMs + retargetDelayMsFor(config.wanderSpeed),
+      };
+      runtime[key] = state;
+    }
+    if (nowMs >= state.nextRetargetAt) {
+      state.wanderTarget =
+        config.min + Math.random() * (config.max - config.min);
+      state.nextRetargetAt = nowMs + retargetDelayMsFor(config.wanderSpeed);
+    }
+    state.current +=
+      (state.wanderTarget - state.current) * lerpFactorFor(config.wanderSpeed);
+  }
+}
