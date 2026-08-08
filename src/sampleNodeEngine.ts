@@ -155,6 +155,10 @@ export class SampleNodeEngine {
     return this.buffer !== null;
   }
 
+  getBuffer(): AudioBuffer | null {
+    return this.buffer;
+  }
+
   /** Async (unlike a plain data-model add) since each node needs its own
    * worklet node spun up and, if a buffer's already loaded, primed with
    * it before it can usefully fire. */

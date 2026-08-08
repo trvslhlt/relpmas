@@ -10,50 +10,50 @@
     <h1>relpmas</h1>
     <p class="app-note">
       Load an audio file, then define sample nodes against it.
+      Right-click a node (on the waveform or in the list below) for its
+      params.
     </p>
     <div id="unlock"></div>
-    <div id="app" hidden>
-      <section class="panel">
-        <h2>Source</h2>
-        <p><input type="file" id="file-input" accept="audio/*" /></p>
-        <div id="waveform"></div>
-      </section>
+    <div id="app" class="app-layout" hidden>
+      <div class="app-main">
+        <section class="panel">
+          <h2>Source</h2>
+          <p><input type="file" id="file-input" accept="audio/*" /></p>
+          <div id="waveform"></div>
+        </section>
 
-      <section class="panel">
-        <h2>Sample nodes</h2>
-        <div class="node-toolbar">
-          <button id="add-node">Add node</button>
-          <button id="remove-node">Remove selected</button>
-          <button id="fire-node">Fire (immediate)</button>
-          <button id="trigger-node">Trigger (pattern)</button>
-        </div>
-        <div id="node-list"></div>
-        <div id="node-params"></div>
-      </section>
+        <section class="panel">
+          <h2>Sample nodes</h2>
+          <div class="node-toolbar">
+            <button id="add-node">Add node</button>
+            <button id="remove-node">Remove selected</button>
+            <button id="fire-node">Fire (immediate)</button>
+            <button id="trigger-node">Trigger (pattern)</button>
+          </div>
+          <div id="node-list"></div>
+        </section>
 
-      <section class="panel">
-        <h2>Node effects</h2>
-        <div id="node-effects"></div>
-      </section>
+        <section class="panel">
+          <h2>Master bus</h2>
+          <div id="master-effects"></div>
+          <div class="node-toolbar">
+            <button id="record-button">Record</button>
+            <button id="stop-record-button" disabled>Stop</button>
+            <a id="download-link" hidden download>Download recording</a>
+          </div>
+        </section>
 
-      <section class="panel">
-        <h2>Master bus</h2>
-        <div id="master-effects"></div>
-        <div class="node-toolbar">
-          <button id="record-button">Record</button>
-          <button id="stop-record-button" disabled>Stop</button>
-          <a id="download-link" hidden download>Download recording</a>
-        </div>
-      </section>
+        <section class="panel">
+          <h2>Patch graph</h2>
+          <p class="app-note">
+            Drag from an out-port (trigS/trigE/fireS/fireE) to another
+            node's in-port to connect them. Click an edge to remove it.
+          </p>
+          <div id="patch-graph"></div>
+        </section>
+      </div>
 
-      <section class="panel">
-        <h2>Patch graph</h2>
-        <p class="app-note">
-          Drag from an out-port (trigS/trigE/fireS/fireE) to another node's
-          in-port to connect them. Click an edge to remove it.
-        </p>
-        <div id="patch-graph"></div>
-      </section>
+      <aside id="node-menu-panel" class="node-menu-panel" hidden></aside>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

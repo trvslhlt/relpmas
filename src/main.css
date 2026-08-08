@@ -1,5 +1,5 @@
-@import "bruit-kit/ui/waveformRangeView.css";
-@import "bruit-kit/ui/multiRangeWaveformView.css";
+@import "bruit-kit/ui/multiMarkerWaveformView.css";
+@import "bruit-kit/ui/zoomableWaveformRangeView.css";
 @import "bruit-kit/ui/automationEditor.css";
 @import "bruit-kit/ui/sliderControl.css";
 
@@ -21,9 +21,21 @@ body {
   font-family: system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
-  max-width: 900px;
+  max-width: 1500px;
   margin: 0 auto;
   padding: 2rem 1rem 4rem;
+}
+
+.app-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 1.5rem;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  max-width: 900px;
 }
 
 h1 {
@@ -223,4 +235,64 @@ input[type="file"] {
   stroke-width: 2;
   stroke-dasharray: 4 3;
   pointer-events: none;
+}
+
+.node-menu-panel {
+  width: 440px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 1.5rem;
+  max-height: calc(100vh - 3rem);
+  overflow-y: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  padding: 0.75rem 1.25rem 1.5rem;
+}
+
+.node-menu-waveform {
+  margin-bottom: 1rem;
+}
+
+.node-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  position: sticky;
+  top: 0;
+  background: var(--panel-bg);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.node-menu-swatch {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.node-menu-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  flex: 1;
+}
+
+.node-menu-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.1rem 0.4rem;
+}
+
+.node-menu-subheading {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
 }
