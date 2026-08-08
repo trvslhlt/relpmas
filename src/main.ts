@@ -203,6 +203,7 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     const buffer = await audioContext.decodeAudioData(arrayBuffer);
     await engine.loadSample(buffer);
     waveformView.setBuffer(buffer);
+    nodeMenu.setBuffer(buffer);
     syncWaveformEntries();
   });
 

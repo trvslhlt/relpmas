@@ -33,6 +33,13 @@ export interface NodeMenuHandle {
    * otherwise, so a caller can call this unconditionally from its own
    * polling loop without checking isOpenFor itself first. */
   updateLiveMarker(id: string, position: number | null): void;
+  /** Pushes a newly-loaded sample onto the embedded waveform, if the menu
+   * is currently showing one -- otherwise a no-op, since ensureWaveform
+   * already pulls the current buffer from the engine whenever it next
+   * builds a view for a node. Needed because loading a new file doesn't
+   * change which node is open, so ensureWaveform's "same node, skip
+   * rebuild" path would otherwise never see the new buffer. */
+  setBuffer(buffer: AudioBuffer): void;
 }
 
 export function createNodeMenu(
@@ -450,6 +457,9 @@ export function createNodeMenu(
     },
     updateLiveMarker(id, position) {
       if (id === currentId) zoomableView?.setLiveMarker(position);
+    },
+    setBuffer(buffer) {
+      zoomableView?.setBuffer(buffer);
     },
   };
 }
