@@ -17,6 +17,7 @@
 
 import {
   type Field,
+  type WaveformRange,
   createZoomableWaveformRangeView,
   effectsFields,
   renderFields,
@@ -40,6 +41,13 @@ export interface NodeMenuHandle {
    * change which node is open, so ensureWaveform's "same node, skip
    * rebuild" path would otherwise never see the new buffer. */
   setBuffer(buffer: AudioBuffer): void;
+  /** Pushes an externally-changed range (e.g. dragged on the main overview
+   * waveform, not through this menu's own embedded editor) onto the
+   * embedded waveform, if this menu is currently open for `id` -- a no-op
+   * otherwise, same unconditionally-callable pattern as updateLiveMarker.
+   * Cheap (setRange only, no full field re-render), safe to call on every
+   * pointermove of a drag. */
+  syncRange(id: string, range: WaveformRange): void;
 }
 
 export function createNodeMenu(
@@ -502,6 +510,9 @@ export function createNodeMenu(
     },
     setBuffer(buffer) {
       zoomableView?.setBuffer(buffer);
+    },
+    syncRange(id, range) {
+      if (id === currentId) zoomableView?.setRange(range);
     },
   };
 }

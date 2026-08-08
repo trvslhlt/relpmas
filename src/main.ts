@@ -135,6 +135,7 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
         range: { start: position, end: newEnd },
       });
       waveformView.setRange(id, { start: position, end: newEnd });
+      nodeMenu.syncRange(id, { start: position, end: newEnd });
     },
     onSelect: (id) => {
       selectedId = id;
