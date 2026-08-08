@@ -32,6 +32,16 @@ body {
   gap: 1.5rem;
 }
 
+/* Needed alongside the plain `hidden` attribute: `.app-layout`'s own
+ * `display: flex` above has the same specificity as the browser's default
+ * `[hidden] { display: none }` rule, and an author stylesheet wins over
+ * the user-agent one at equal specificity -- so without this, #app was
+ * rendering (and its file input was clickable) even while `hidden`, well
+ * before "Click to enable audio" was ever pressed. */
+.app-layout[hidden] {
+  display: none;
+}
+
 .app-main {
   flex: 1;
   min-width: 0;

@@ -39,8 +39,6 @@ const downloadLinkEl =
 const NODE_COLORS = ["#ffb454", "#4c7dff", "#6fdc8c", "#ff6b9d", "#c792ea"];
 
 unlockAudioContext(unlockEl).then(async (audioContext) => {
-  appEl.hidden = false;
-
   const engine = new SampleNodeEngine(audioContext);
   await engine.init();
   const masterBus = new MasterBus(audioContext, engine.output);
@@ -249,4 +247,11 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
       nodeMenu.updateLiveMarker(node.id, livePosition);
     }
   }, 500);
+
+  // Revealed only now, once every listener above (including the file
+  // input's own) is wired -- revealing it as soon as the AudioContext
+  // unlocked, before setup finished, left a real window where the file
+  // input was visible and clickable but had no "change" listener yet, so
+  // a fast file pick during that gap was silently lost.
+  appEl.hidden = false;
 });
