@@ -37,13 +37,13 @@ export type FiringPattern = "single" | "curveSpaced";
 export type MotionMode = "none" | "curve" | "wander" | "both";
 
 /** Config for one of a node's two independently-modulated live scalars
- * (position or length -- see SampleNode.positionMotion/lengthMotion).
+ * (position or duration -- see SampleNode.positionMotion/durationMotion).
  * `min`/`max` are
  * fractions local to the node's own selected range (SampleNode.range),
  * not the whole buffer -- the range is the candidate playback area, and
  * motion only ever moves within it (see SampleNodeEngine.rangeAtTime).
- * For position, 0 = the range's own start, 1 = its own end. For length,
- * 0 = zero length, 1 = the range's own full length. `curvePoints`/
+ * For position, 0 = the range's own start, 1 = its own end. For duration,
+ * 0 = (clamped to) a sliver, 1 = the range's own full length. `curvePoints`/
  * `curveDurationSeconds` apply when mode is "curve" or "both": elapsed
  * time, looped over curveDurationSeconds, maps through the curve into
  * [min, max]. `wanderSpeed` applies when mode is "wander" or "both":
@@ -107,7 +107,12 @@ export interface SampleNode {
   intervalMaxMs: number;
 
   positionMotion: MotionConfig;
-  lengthMotion: MotionConfig;
+  /** How much of the candidate range actually plays on a given fire --
+   * 0 = (clamped to) a sliver, 1 = the range's own full length. Governs a
+   * single fire's playback duration directly (span / rate), evaluated at
+   * each fire's own time same as positionMotion, so a repeatedly-triggered
+   * single-fire node can "breathe" in duration too, not just position. */
+  durationMotion: MotionConfig;
 
   /** This node's own effect chain, applied to its voices before they join
    * the shared mix bus -- see SampleNodeEngine's per-node
@@ -196,10 +201,12 @@ export function createSampleNode(color: string): SampleNode {
     // Position motion's [min,max] is a fraction-of-range (not
     // fraction-of-buffer -- see MotionConfig's own doc comment) excursion
     // for the range's start point; default off (mode: "none") until the
-    // user opts in. Length motion's [min,max] is a fraction of the
-    // range's own length.
+    // user opts in. Duration motion's [min,max] is a fraction of the
+    // range's own length -- clamped to a 0.01 floor regardless of this
+    // config (see SampleNodeEngine.rangeAtTime) so it can never fully
+    // silence a fire.
     positionMotion: createMotionConfig(0, 0.9),
-    lengthMotion: createMotionConfig(0.02, 0.4),
+    durationMotion: createMotionConfig(0.02, 0.4),
 
     effects: [],
     modulationRoute: createModulationRoute(),

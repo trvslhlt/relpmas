@@ -94,9 +94,9 @@ export function createNodeMenu(
 
   const generalSection = createSection("General");
   const playbackSection = createSection("Playback");
+  const durationSection = createSection("Duration");
   const firingSection = createSection("Firing pattern");
   const positionMotionSection = createSection("Position motion");
-  const lengthMotionSection = createSection("Length motion");
   const modulationSection = createSection("Modulation route");
   const effectsSection = createSection("Effects");
 
@@ -105,9 +105,9 @@ export function createNodeMenu(
     waveformContainer,
     generalSection.details,
     playbackSection.details,
+    durationSection.details,
     firingSection.details,
     positionMotionSection.details,
-    lengthMotionSection.details,
     modulationSection.details,
     effectsSection.details,
   );
@@ -134,7 +134,7 @@ export function createNodeMenu(
 
   function motionFields(
     node: SampleNode,
-    key: "positionMotion" | "lengthMotion",
+    key: "positionMotion" | "durationMotion",
     labelPrefix: string,
   ): Field[] {
     const config = node[key];
@@ -471,14 +471,14 @@ export function createNodeMenu(
 
     renderFields(generalSection.body, generalFields(node));
     renderFields(playbackSection.body, playbackFields(node));
+    renderFields(
+      durationSection.body,
+      motionFields(node, "durationMotion", "Duration"),
+    );
     renderFields(firingSection.body, firingFields(node));
     renderFields(
       positionMotionSection.body,
       motionFields(node, "positionMotion", "Position"),
-    );
-    renderFields(
-      lengthMotionSection.body,
-      motionFields(node, "lengthMotion", "Length"),
     );
     renderFields(modulationSection.body, modulationRouteFields(node));
     renderFields(

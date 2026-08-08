@@ -47,7 +47,7 @@ interface NodeRuntime {
   nextTriggerAt: number | null;
   nextAlternatingDirection: "forward" | "backward";
   positionWander: WanderState | null;
-  lengthWander: WanderState | null;
+  durationWander: WanderState | null;
   liveRange: WaveformRange;
 }
 
@@ -174,7 +174,7 @@ export class SampleNodeEngine {
       nextTriggerAt: null,
       nextAlternatingDirection: "forward",
       positionWander: null,
-      lengthWander: null,
+      durationWander: null,
       liveRange: { ...node.range },
     });
 
@@ -447,15 +447,14 @@ export class SampleNodeEngine {
    * regardless of how far `atTime` is from now.
    *
    * node.range is the node's candidate playback area, not just its
-   * no-motion default: position/length motion work entirely in
+   * no-motion default: position/duration motion work entirely in
    * coordinates local to that range (0 = the range's own start, 1 = its
-   * own end for position; 0 = zero length, 1 = the range's own full
-   * length for length) and only get mapped into absolute buffer
-   * fractions at the very end, so a fire can never land outside the
-   * selected range. A local fragment that would run past the range's own
-   * end wraps back to the range's own start, same wraparound semantics as
-   * the range itself (see wrappedLength's own doc comment) just rescoped
-   * one level in. */
+   * own end for position; 0 = a sliver, 1 = the range's own full length
+   * for duration) and only get mapped into absolute buffer fractions at
+   * the very end, so a fire can never land outside the selected range. A
+   * local fragment that would run past the range's own end wraps back to
+   * the range's own start, same wraparound semantics as the range itself
+   * (see wrappedLength's own doc comment) just rescoped one level in. */
   private rangeAtTime(
     node: SampleNode,
     runtime: NodeRuntime,
@@ -473,22 +472,28 @@ export class SampleNodeEngine {
       atTime,
       0,
     );
-    const localLength = this.motionValue(
-      node.lengthMotion,
-      runtime.lengthWander,
+    const localDuration = this.motionValue(
+      node.durationMotion,
+      runtime.durationWander,
       atTime,
       1,
     );
 
     const wrappedLocalStart = wrapFraction(localStart);
-    // Capped just under 1 (not at 1) -- a local length of exactly 1 would
-    // wrap-add back onto wrappedLocalStart exactly (x + 1 mod 1 === x),
-    // making the "full range" case indistinguishable from a zero-length
-    // one once mapped through wrapFraction. The lost sliver is far below
-    // audible/one-sample resolution for any real buffer.
-    const clampedLocalLength = Math.min(1 - 1e-6, Math.max(0, localLength));
+    // Floored at 0.01 (not 0) per durationMotion's own contract -- a
+    // fire's duration can shrink to a sliver but never fully silence.
+    // Capped just under 1 (not at 1) for a different reason: a local
+    // duration of exactly 1 would wrap-add back onto wrappedLocalStart
+    // exactly (x + 1 mod 1 === x), making the "full range" case
+    // indistinguishable from a near-zero one once mapped through
+    // wrapFraction. The lost sliver is far below audible/one-sample
+    // resolution for any real buffer.
+    const clampedLocalDuration = Math.min(
+      1 - 1e-6,
+      Math.max(0.01, localDuration),
+    );
     const wrappedLocalEnd = wrapFraction(
-      wrappedLocalStart + clampedLocalLength,
+      wrappedLocalStart + clampedLocalDuration,
     );
 
     return {
@@ -539,7 +544,7 @@ export class SampleNodeEngine {
       if (!runtime) continue;
 
       this.advanceWander(node.positionMotion, "positionWander", runtime);
-      this.advanceWander(node.lengthMotion, "lengthWander", runtime);
+      this.advanceWander(node.durationMotion, "durationWander", runtime);
 
       const nextRange = this.rangeAtTime(node, runtime, now);
       if (
@@ -564,7 +569,7 @@ export class SampleNodeEngine {
 
   private advanceWander(
     config: MotionConfig,
-    key: "positionWander" | "lengthWander",
+    key: "positionWander" | "durationWander",
     runtime: NodeRuntime,
   ): void {
     if (config.mode !== "wander" && config.mode !== "both") {
