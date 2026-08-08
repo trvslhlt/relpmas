@@ -525,7 +525,7 @@ export class SampleNodeEngine {
         now >= runtime.nextTriggerAt
       ) {
         this.trigger(id);
-        runtime.nextTriggerAt = now + 1 / Math.max(0.01, node.loopFrequencyHz);
+        runtime.nextTriggerAt = now + Math.max(0.01, node.triggerPeriodSeconds);
       }
     }
   }

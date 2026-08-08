@@ -289,10 +289,45 @@ input[type="file"] {
   padding: 0.1rem 0.4rem;
 }
 
-.node-menu-subheading {
+.node-menu-section {
+  border-top: 1px solid var(--border);
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.node-menu-section:first-of-type {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.node-menu-section-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
   font-size: 0.85rem;
   font-weight: 600;
-  margin: 1rem 0 0.5rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.node-menu-section-summary::-webkit-details-marker {
+  display: none;
+}
+
+.node-menu-section-summary::before {
+  content: "▸";
+  display: inline-block;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+
+.node-menu-section[open] > .node-menu-section-summary::before {
+  transform: rotate(90deg);
+}
+
+.node-menu-section-body {
   padding-top: 0.5rem;
-  border-top: 1px solid var(--border);
 }

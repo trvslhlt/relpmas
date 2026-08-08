@@ -64,20 +64,44 @@ export function createNodeMenu(
   const waveformContainer = document.createElement("div");
   waveformContainer.className = "node-menu-waveform";
 
-  const paramsBody = document.createElement("div");
+  /** One collapsible section (a native <details>/<summary>), built once so
+   * its open/closed state survives re-renders -- render() only ever
+   * touches `body`'s contents via renderFields, never recreates the
+   * <details> element itself. */
+  function createSection(title: string): {
+    details: HTMLDetailsElement;
+    body: HTMLDivElement;
+  } {
+    const details = document.createElement("details");
+    details.className = "node-menu-section";
+    details.open = true;
+    const summary = document.createElement("summary");
+    summary.className = "node-menu-section-summary";
+    summary.textContent = title;
+    const body = document.createElement("div");
+    body.className = "node-menu-section-body";
+    details.append(summary, body);
+    return { details, body };
+  }
 
-  const effectsHeading = document.createElement("h3");
-  effectsHeading.className = "node-menu-subheading";
-  effectsHeading.textContent = "Effects";
-
-  const effectsBody = document.createElement("div");
+  const generalSection = createSection("General");
+  const playbackSection = createSection("Playback");
+  const firingSection = createSection("Firing pattern");
+  const positionMotionSection = createSection("Position motion");
+  const lengthMotionSection = createSection("Length motion");
+  const modulationSection = createSection("Modulation route");
+  const effectsSection = createSection("Effects");
 
   panelEl.append(
     header,
     waveformContainer,
-    paramsBody,
-    effectsHeading,
-    effectsBody,
+    generalSection.details,
+    playbackSection.details,
+    firingSection.details,
+    positionMotionSection.details,
+    lengthMotionSection.details,
+    modulationSection.details,
+    effectsSection.details,
   );
 
   let zoomableView: ReturnType<typeof createZoomableWaveformRangeView> | null =
@@ -273,7 +297,7 @@ export function createNodeMenu(
     ];
   }
 
-  function paramFields(node: SampleNode): Field[] {
+  function generalFields(node: SampleNode): Field[] {
     return [
       {
         key: "label",
@@ -302,16 +326,21 @@ export function createNodeMenu(
           update({ armMode: value as SampleNode["armMode"] }),
       },
       {
-        key: "loopFrequencyHz",
-        label: "Loop frequency (Hz)",
+        key: "triggerPeriodSeconds",
+        label: "Trigger period (s)",
         kind: "range",
-        value: node.loopFrequencyHz,
+        value: node.triggerPeriodSeconds,
         min: 0.1,
-        max: 20,
+        max: 10,
         step: 0.1,
         indented: true,
-        onChange: (value) => update({ loopFrequencyHz: value }),
+        onChange: (value) => update({ triggerPeriodSeconds: value }),
       },
+    ];
+  }
+
+  function playbackFields(node: SampleNode): Field[] {
+    return [
       {
         key: "direction",
         label: "Direction",
@@ -341,6 +370,11 @@ export function createNodeMenu(
         step: 1,
         onChange: (value) => update({ fadeMs: value }),
       },
+    ];
+  }
+
+  function firingFields(node: SampleNode): Field[] {
+    return [
       {
         key: "firingPattern",
         label: "Firing pattern",
@@ -390,9 +424,6 @@ export function createNodeMenu(
         points: node.intervalCurve,
         onChange: (points) => update({ intervalCurve: points }),
       },
-      ...motionFields(node, "positionMotion", "Position"),
-      ...motionFields(node, "lengthMotion", "Length"),
-      ...modulationRouteFields(node),
     ];
   }
 
@@ -430,9 +461,20 @@ export function createNodeMenu(
 
     ensureWaveform(node);
 
-    renderFields(paramsBody, paramFields(node));
+    renderFields(generalSection.body, generalFields(node));
+    renderFields(playbackSection.body, playbackFields(node));
+    renderFields(firingSection.body, firingFields(node));
     renderFields(
-      effectsBody,
+      positionMotionSection.body,
+      motionFields(node, "positionMotion", "Position"),
+    );
+    renderFields(
+      lengthMotionSection.body,
+      motionFields(node, "lengthMotion", "Length"),
+    );
+    renderFields(modulationSection.body, modulationRouteFields(node));
+    renderFields(
+      effectsSection.body,
       effectsFields(
         () => engine.getNode(node.id)?.effects ?? [],
         (next) => {

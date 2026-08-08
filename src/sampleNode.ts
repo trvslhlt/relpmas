@@ -8,7 +8,7 @@ export type Direction = "forward" | "backward" | "alternating";
 
 /** manual: each click, or each inbound graph edge targeting this node, is
  * one trigger. loop: while armed, the engine's scheduler generates a
- * trigger every 1/loopFrequencyHz seconds. Disarming stops future
+ * trigger every triggerPeriodSeconds seconds. Disarming stops future
  * triggers but never cuts off fires already in flight. */
 export type ArmMode = "manual" | "loop";
 
@@ -72,7 +72,7 @@ export interface SampleNode {
   fadeMs: number;
 
   armMode: ArmMode;
-  loopFrequencyHz: number;
+  triggerPeriodSeconds: number;
 
   firingPattern: FiringPattern;
   fireCount: number;
@@ -155,7 +155,7 @@ export function createSampleNode(color: string): SampleNode {
     fadeMs: 4,
 
     armMode: "manual",
-    loopFrequencyHz: 2,
+    triggerPeriodSeconds: 0.5,
 
     firingPattern: "single",
     fireCount: 6,
