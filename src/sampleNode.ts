@@ -1,6 +1,24 @@
 import type { AutomationPoint, EffectSpec } from "bruit-kit/audio";
 import type { WaveformRange } from "bruit-kit/ui";
 
+/** Wraps an arbitrary fraction into [0, 1) -- position motion (curve/wander)
+ * can drift outside [0,1] before this normalizes it back onto the buffer,
+ * same wraparound semantics as DirectionalSamplePlayer's own
+ * startFraction/endFraction (see its module doc comment). */
+export function wrapFraction(value: number): number {
+  return ((value % 1) + 1) % 1;
+}
+
+/** Forward-wrap distance from start to end, always in [0, 1) -- 0 only when
+ * start and end are exactly equal. A plain `end - start` would go negative
+ * for a wrapped range (end < start), which is exactly the case this
+ * exists for: a node's range.start > range.end means "wraps through the
+ * buffer's end back to its start," not an invalid ordering -- see
+ * SampleNode.range's own doc comment. */
+export function wrappedLength(start: number, end: number): number {
+  return wrapFraction(end - start);
+}
+
 /** forward/backward always play the same way; alternating flips after
  * every fire, so ping-pong emerges across repeated fires (see the design
  * note in sampleNodeEngine.ts) rather than being a property of one fire. */
@@ -63,7 +81,9 @@ export interface SampleNode {
   color: string;
   /** 0..1 fractions of the loaded buffer's own duration -- the base range
    * range motion (below) moves away from and returns to being the default
-   * when motion is "none". */
+   * when motion is "none". Directional, not an unordered {lo,hi} bound:
+   * if start > end, the fragment wraps through the buffer's end back to
+   * its start (see wrappedLength). */
   range: WaveformRange;
   direction: Direction;
   /** Tape-style: shifts pitch and speed together. */

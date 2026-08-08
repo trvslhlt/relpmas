@@ -13,7 +13,12 @@ import {
 } from "bruit-kit/audio";
 import { DirectionalSamplePlayer } from "bruit-kit/sources";
 import type { WaveformRange } from "bruit-kit/ui";
-import type { MotionConfig, SampleNode } from "./sampleNode";
+import {
+  type MotionConfig,
+  type SampleNode,
+  wrapFraction,
+  wrappedLength,
+} from "./sampleNode";
 
 /** Two granularities: triggerStart/triggerEnd span a whole firing burst;
  * fireStart/fireEnd are per individual fire, for cascades that should
@@ -305,7 +310,7 @@ export class SampleNodeEngine {
       });
 
       const durationSeconds =
-        ((range.end - range.start) * this.buffer.duration) / rate;
+        (wrappedLength(range.start, range.end) * this.buffer.duration) / rate;
       const fireEndTime = fireTime + durationSeconds;
       lastFireEndTime = fireEndTime;
       this.scheduleEvent(id, "fireStart", fireTime - now);
@@ -445,7 +450,7 @@ export class SampleNodeEngine {
     runtime: NodeRuntime,
     atTime: number,
   ): WaveformRange {
-    const baseLength = node.range.end - node.range.start;
+    const baseLength = wrappedLength(node.range.start, node.range.end);
 
     const start = this.motionValue(
       node.positionMotion,
@@ -460,9 +465,16 @@ export class SampleNodeEngine {
       baseLength,
     );
 
-    const clampedStart = Math.min(1, Math.max(0, start));
-    const clampedLength = Math.min(1 - clampedStart, Math.max(0, length));
-    return { start: clampedStart, end: clampedStart + clampedLength };
+    // Wrapped into [0,1) rather than clamped against each other -- a
+    // length that pushes past the buffer's end wraps the fragment through
+    // to its start instead of being capped at 1 - start (see
+    // wrappedLength's own doc comment).
+    const wrappedStart = wrapFraction(start);
+    const clampedLength = Math.min(1, Math.max(0, length));
+    return {
+      start: wrappedStart,
+      end: wrapFraction(wrappedStart + clampedLength),
+    };
   }
 
   private motionValue(

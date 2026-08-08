@@ -8,7 +8,7 @@ import { unlockAudioContext } from "./audioContext";
 import { MasterBus } from "./masterBus";
 import { createNodeMenu } from "./nodeMenu";
 import { createPatchGraphView } from "./patchGraph";
-import { createSampleNode } from "./sampleNode";
+import { createSampleNode, wrapFraction, wrappedLength } from "./sampleNode";
 import { SampleNodeEngine } from "./sampleNodeEngine";
 
 const unlockEl = document.querySelector<HTMLDivElement>("#unlock")!;
@@ -127,17 +127,14 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
       // it translates the whole range, preserving whatever length is
       // currently set (see nodeMenu.ts's embedded zoomable waveform for
       // the only other way to change either boundary independently).
-      const length = node.range.end - node.range.start;
-      const clampedStart = Math.min(
-        Math.max(position, 0),
-        Math.max(0, 1 - length),
-      );
+      // Dragging past the buffer's end wraps the fragment through to its
+      // start rather than stopping the marker (see wrappedLength).
+      const length = wrappedLength(node.range.start, node.range.end);
+      const newEnd = wrapFraction(position + length);
       engine.updateNode(id, {
-        range: { start: clampedStart, end: clampedStart + length },
+        range: { start: position, end: newEnd },
       });
-      // The widget already moved the marker to the raw (pre-length-clamp)
-      // position during the drag -- correct it if the clamp above kicked in.
-      waveformView.setPosition(id, clampedStart);
+      waveformView.setRange(id, { start: position, end: newEnd });
     },
     onSelect: (id) => {
       selectedId = id;
@@ -163,6 +160,7 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
         position: node.range.start,
         color: node.color,
         label: node.label,
+        range: node.range,
       })),
     );
     waveformView.setSelected(selectedId);
