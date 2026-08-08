@@ -37,7 +37,13 @@ export type FiringPattern = "single" | "curveSpaced";
 export type MotionMode = "none" | "curve" | "wander" | "both";
 
 /** Config for one of a node's two independently-modulated live scalars
- * (position or length -- see MotionState below). `curvePoints`/
+ * (position or length -- see SampleNode.positionMotion/lengthMotion).
+ * `min`/`max` are
+ * fractions local to the node's own selected range (SampleNode.range),
+ * not the whole buffer -- the range is the candidate playback area, and
+ * motion only ever moves within it (see SampleNodeEngine.rangeAtTime).
+ * For position, 0 = the range's own start, 1 = its own end. For length,
+ * 0 = zero length, 1 = the range's own full length. `curvePoints`/
  * `curveDurationSeconds` apply when mode is "curve" or "both": elapsed
  * time, looped over curveDurationSeconds, maps through the curve into
  * [min, max]. `wanderSpeed` applies when mode is "wander" or "both":
@@ -187,10 +193,11 @@ export function createSampleNode(color: string): SampleNode {
     intervalMinMs: 40,
     intervalMaxMs: 600,
 
-    // Position motion's [min,max] is a fraction-of-buffer excursion range
+    // Position motion's [min,max] is a fraction-of-range (not
+    // fraction-of-buffer -- see MotionConfig's own doc comment) excursion
     // for the range's start point; default off (mode: "none") until the
-    // user opts in. Length motion's [min,max] is a fraction-of-buffer span
-    // for the range's own width.
+    // user opts in. Length motion's [min,max] is a fraction of the
+    // range's own length.
     positionMotion: createMotionConfig(0, 0.9),
     lengthMotion: createMotionConfig(0.02, 0.4),
 

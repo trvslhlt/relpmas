@@ -444,36 +444,56 @@ export class SampleNodeEngine {
   /** Computes the range motion at an arbitrary (possibly future) time --
    * curve contributions are exact (curvePositionAtElapsed is a pure
    * function), wander contributions use the current wander snapshot
-   * regardless of how far `atTime` is from now. */
+   * regardless of how far `atTime` is from now.
+   *
+   * node.range is the node's candidate playback area, not just its
+   * no-motion default: position/length motion work entirely in
+   * coordinates local to that range (0 = the range's own start, 1 = its
+   * own end for position; 0 = zero length, 1 = the range's own full
+   * length for length) and only get mapped into absolute buffer
+   * fractions at the very end, so a fire can never land outside the
+   * selected range. A local fragment that would run past the range's own
+   * end wraps back to the range's own start, same wraparound semantics as
+   * the range itself (see wrappedLength's own doc comment) just rescoped
+   * one level in. */
   private rangeAtTime(
     node: SampleNode,
     runtime: NodeRuntime,
     atTime: number,
   ): WaveformRange {
-    const baseLength = wrappedLength(node.range.start, node.range.end);
+    const rangeStart = node.range.start;
+    const rangeLength = wrappedLength(node.range.start, node.range.end);
 
-    const start = this.motionValue(
+    // Falls back to "the range's own start, at its full length" for
+    // "none" mode -- the same no-motion behavior as before, just
+    // expressed in the range's own local terms instead of absolute ones.
+    const localStart = this.motionValue(
       node.positionMotion,
       runtime.positionWander,
       atTime,
-      node.range.start,
+      0,
     );
-    const length = this.motionValue(
+    const localLength = this.motionValue(
       node.lengthMotion,
       runtime.lengthWander,
       atTime,
-      baseLength,
+      1,
     );
 
-    // Wrapped into [0,1) rather than clamped against each other -- a
-    // length that pushes past the buffer's end wraps the fragment through
-    // to its start instead of being capped at 1 - start (see
-    // wrappedLength's own doc comment).
-    const wrappedStart = wrapFraction(start);
-    const clampedLength = Math.min(1, Math.max(0, length));
+    const wrappedLocalStart = wrapFraction(localStart);
+    // Capped just under 1 (not at 1) -- a local length of exactly 1 would
+    // wrap-add back onto wrappedLocalStart exactly (x + 1 mod 1 === x),
+    // making the "full range" case indistinguishable from a zero-length
+    // one once mapped through wrapFraction. The lost sliver is far below
+    // audible/one-sample resolution for any real buffer.
+    const clampedLocalLength = Math.min(1 - 1e-6, Math.max(0, localLength));
+    const wrappedLocalEnd = wrapFraction(
+      wrappedLocalStart + clampedLocalLength,
+    );
+
     return {
-      start: wrappedStart,
-      end: wrapFraction(wrappedStart + clampedLength),
+      start: wrapFraction(rangeStart + wrappedLocalStart * rangeLength),
+      end: wrapFraction(rangeStart + wrappedLocalEnd * rangeLength),
     };
   }
 
