@@ -135,26 +135,62 @@ export interface SampleNode {
   effects: EffectSpec[];
 
   /** Fires once per *trigger* (covers the whole firing burst, not each
-   * individual fire) -- see SampleNodeEngine.trigger(). */
-  modulationRoute: ModulationRoute;
+   * individual fire) -- see SampleNodeEngine.trigger(). Independent of
+   * lfoRoute -- a node can use either, both, or neither, not a toggle
+   * between them. */
+  sweepRoute: SweepRoute;
+  /** Same trigger timing as sweepRoute, but continuously modulates the
+   * target via an oscillator instead of ramping it directly -- see
+   * lfoRoute's own doc comment. */
+  lfoRoute: LfoRoute;
 }
+
+/** -1 means "no effect selected" -- the default/empty state for a node
+ * with no effects yet, or before the user has picked one. Never a valid
+ * index into SampleNode.effects. */
+export const NO_TARGET_EFFECT = -1;
 
 /** "On trigger, ramp param X along a curve over durationSeconds" --
  * targeting one of this node's own chain effects' exposed AudioParams
  * (via BuiltEffectsChain.getAudioParam(targetEffectIndex,
- * targetParamKey); `bruit-kit`'s effect classes name theirs
- * `frequencyParam`, `rateParam`, `delayTimeParam`, etc., see each
- * effect's own source). `useModulator` is the brief's two-stage case ("an
- * LFO sweep that then modulates a chorus depth"): instead of ramping the
- * target directly, a `createTriggerableModulator` continuously modulates
- * the target, and the curve ramps the *modulator's own rate* instead
- * (`depthCurvePoints` ramps its depth the same way) -- see
- * SampleNodeEngine.trigger(). */
-export interface ModulationRoute {
+ * targetParamKey), populated in the UI from bruit-kit's
+ * getEffectParamOptions rather than typed in free-form -- see
+ * SampleNodeEngine.trigger()/setNodeSweepRoute). */
+export interface SweepRoute {
   enabled: boolean;
   targetEffectIndex: number;
   targetParamKey: string;
-  useModulator: boolean;
+  curvePoints: AutomationPoint[];
+  durationSeconds: number;
+  valueMin: number;
+  valueMax: number;
+}
+
+export function createSweepRoute(): SweepRoute {
+  return {
+    enabled: false,
+    targetEffectIndex: NO_TARGET_EFFECT,
+    targetParamKey: "",
+    curvePoints: [
+      { position: 0, value: 0 },
+      { position: 1, value: 1 },
+    ],
+    durationSeconds: 1,
+    valueMin: 200,
+    valueMax: 4000,
+  };
+}
+
+/** The brief's two-stage case ("an LFO sweep that then modulates a chorus
+ * depth"): rather than ramping the target directly, a
+ * createTriggerableModulator continuously modulates it, and the curve
+ * ramps the *modulator's own rate* instead (depthCurvePoints ramps its
+ * depth the same way) -- see SampleNodeEngine.trigger()/
+ * setNodeLfoRoute. */
+export interface LfoRoute {
+  enabled: boolean;
+  targetEffectIndex: number;
+  targetParamKey: string;
   curvePoints: AutomationPoint[];
   durationSeconds: number;
   valueMin: number;
@@ -164,19 +200,18 @@ export interface ModulationRoute {
   depthMax: number;
 }
 
-export function createModulationRoute(): ModulationRoute {
+export function createLfoRoute(): LfoRoute {
   return {
     enabled: false,
-    targetEffectIndex: 0,
-    targetParamKey: "frequencyParam",
-    useModulator: false,
+    targetEffectIndex: NO_TARGET_EFFECT,
+    targetParamKey: "",
     curvePoints: [
       { position: 0, value: 0 },
       { position: 1, value: 1 },
     ],
     durationSeconds: 1,
-    valueMin: 200,
-    valueMax: 4000,
+    valueMin: 1,
+    valueMax: 20,
     depthCurvePoints: [
       { position: 0, value: 0 },
       { position: 0.3, value: 1 },
@@ -226,6 +261,7 @@ export function createSampleNode(color: string): SampleNode {
     durationMotion: createMotionConfig(0.01, 1.0, ascendingCurve()),
 
     effects: [],
-    modulationRoute: createModulationRoute(),
+    sweepRoute: createSweepRoute(),
+    lfoRoute: createLfoRoute(),
   };
 }

@@ -14,8 +14,10 @@ import {
 import { DirectionalSamplePlayer } from "bruit-kit/sources";
 import type { WaveformRange } from "bruit-kit/ui";
 import {
+  type LfoRoute,
   type MotionConfig,
   type SampleNode,
+  type SweepRoute,
   wrapFraction,
   wrappedLength,
 } from "./sampleNode";
@@ -58,8 +60,8 @@ interface NodeRuntime {
 interface NodeAudio {
   player: DirectionalSamplePlayer;
   chain: BuiltEffectsChain;
-  /** Lazily created the first time this node triggers with
-   * modulationRoute.useModulator set -- see triggerModulationRoute. */
+  /** Lazily created the first time this node's lfoRoute is enabled --
+   * see reconcileLfoConnection. */
   modulator: TriggerableModulator | null;
   modulatorConnectedTo: AudioParam | null;
 }
@@ -199,6 +201,10 @@ export class SampleNodeEngine {
     if (audio) {
       audio.player.panic();
       audio.chain.dispose();
+      // Otherwise the modulator's oscillator (once created) runs forever
+      // -- a stopped OscillatorNode can't restart, so this is only safe
+      // because the node itself is being torn down too.
+      audio.modulator?.dispose();
       this.audio.delete(id);
     }
     for (const edge of this.edges.values()) {
@@ -222,6 +228,10 @@ export class SampleNodeEngine {
     audio.player.connect(chain.input);
     chain.output.connect(this.mixBus);
     audio.chain = chain;
+    // The rebuilt chain's params are entirely new AudioParam instances --
+    // without this, an active LFO route would keep its connection to the
+    // old, now-disposed chain's param instead of the new one.
+    this.reconcileLfoConnection(id);
   }
 
   /** Value-only nudge (a range field's continuous "input" events) -- never
@@ -318,7 +328,8 @@ export class SampleNodeEngine {
     }
     this.scheduleEvent(id, "triggerEnd", lastFireEndTime - now);
 
-    this.triggerModulationRoute(node, audio, now);
+    this.triggerSweepRoute(node, audio, now);
+    this.triggerLfoRoute(node, audio, now);
   }
 
   /** Schedules a UI-feedback-and-graph-evaluation event `delaySeconds` from
@@ -351,45 +362,48 @@ export class SampleNodeEngine {
     }
   }
 
-  /** Fires once per trigger (not per fire -- see ModulationRoute's own doc):
-   * either ramps the target AudioParam directly, or (useModulator) ramps a
-   * lazily-created TriggerableModulator's own rate/depth while it
-   * continuously modulates the target. A target that doesn't resolve
-   * (index out of range, or targetParamKey isn't an AudioParam on that
-   * effect instance -- both realistic given targetParamKey is free-typed
-   * in the UI) is silently skipped rather than throwing, same tolerance
+  /** Fires once per trigger (not per fire -- see SweepRoute's own doc):
+   * ramps the target AudioParam directly. A target that doesn't resolve
+   * (no effect selected, or the selected effect no longer has that many
+   * params -- realistic if effects were edited after this route was set
+   * up) is silently skipped rather than throwing, same tolerance
    * BuiltEffectsChain.getAudioParam itself documents. */
-  private triggerModulationRoute(
+  private triggerSweepRoute(
     node: SampleNode,
     audio: NodeAudio,
     atTime: number,
   ): void {
-    const route = node.modulationRoute;
+    const route = node.sweepRoute;
     if (!route.enabled) return;
     const target = audio.chain.getAudioParam(
       route.targetEffectIndex,
       route.targetParamKey,
     );
     if (!target) return;
+    scheduleAutomation(
+      target,
+      route.curvePoints,
+      this.audioContext,
+      route.durationSeconds,
+      { min: route.valueMin, max: route.valueMax },
+      atTime,
+    );
+  }
 
-    if (!route.useModulator) {
-      scheduleAutomation(
-        target,
-        route.curvePoints,
-        this.audioContext,
-        route.durationSeconds,
-        { min: route.valueMin, max: route.valueMax },
-        atTime,
-      );
+  /** Fires once per trigger: ramps a lazily-created TriggerableModulator's
+   * own rate/depth while it continuously modulates the target -- see
+   * LfoRoute's own doc comment. The modulator's actual connect/disconnect
+   * lifecycle lives in reconcileLfoConnection, not here, since that also
+   * needs to run on route changes and effect-chain rebuilds, not just on
+   * trigger. */
+  private triggerLfoRoute(
+    node: SampleNode,
+    audio: NodeAudio,
+    atTime: number,
+  ): void {
+    const route = node.lfoRoute;
+    if (!route.enabled || !audio.modulator || !audio.modulatorConnectedTo) {
       return;
-    }
-
-    if (!audio.modulator) {
-      audio.modulator = createTriggerableModulator(this.audioContext);
-    }
-    if (audio.modulatorConnectedTo !== target) {
-      audio.modulator.connect(target);
-      audio.modulatorConnectedTo = target;
     }
     scheduleAutomation(
       audio.modulator.rateParam,
@@ -407,6 +421,64 @@ export class SampleNodeEngine {
       { min: route.depthMin, max: route.depthMax },
       atTime,
     );
+  }
+
+  /** Resolves node.lfoRoute against the node's *current* effect chain and
+   * brings the modulator's actual connection in line with it -- called
+   * whenever the route itself changes (setNodeLfoRoute) or the chain is
+   * rebuilt (setNodeEffects), since a rebuilt chain's params are entirely
+   * new AudioParam instances that any prior connection would otherwise
+   * silently keep pointing at stale, disposed ones. Disabling the route,
+   * or a target that no longer resolves, disconnects rather than leaving
+   * the oscillator's last-scheduled output permanently feeding into
+   * whatever it was last connected to. */
+  private reconcileLfoConnection(id: string): void {
+    const node = this.nodes.get(id);
+    const audio = this.audio.get(id);
+    if (!node || !audio) return;
+    const route = node.lfoRoute;
+    const target = route.enabled
+      ? audio.chain.getAudioParam(route.targetEffectIndex, route.targetParamKey)
+      : undefined;
+    if (!target) {
+      audio.modulator?.disconnect();
+      audio.modulatorConnectedTo = null;
+      return;
+    }
+    if (!audio.modulator) {
+      audio.modulator = createTriggerableModulator(this.audioContext);
+    }
+    audio.modulator.connect(target);
+    audio.modulatorConnectedTo = target;
+  }
+
+  /** Updates the node's sweep route and immediately cancels any pending
+   * automation on whatever it currently targets -- a sweep has no
+   * persistent connection to reconcile (unlike the LFO's oscillator), but
+   * a disabled/retargeted route would otherwise leave an already-scheduled
+   * ramp free to keep firing until it finishes on its own, silently
+   * overriding a manual effect-panel slider change in the meantime (see
+   * the module's own note on the bug this fixes). */
+  setNodeSweepRoute(id: string, route: SweepRoute): void {
+    const node = this.nodes.get(id);
+    const audio = this.audio.get(id);
+    if (!node || !audio) return;
+    node.sweepRoute = route;
+    const target = audio.chain.getAudioParam(
+      route.targetEffectIndex,
+      route.targetParamKey,
+    );
+    target?.cancelScheduledValues(this.audioContext.currentTime);
+  }
+
+  /** Updates the node's LFO route and reconciles the modulator's actual
+   * connection immediately (not just on the next trigger), so disabling
+   * it or changing its target takes effect right away. */
+  setNodeLfoRoute(id: string, route: LfoRoute): void {
+    const node = this.nodes.get(id);
+    if (!node) return;
+    node.lfoRoute = route;
+    this.reconcileLfoConnection(id);
   }
 
   /** Immediate, direct fire -- bypasses arm/trigger/firing-pattern

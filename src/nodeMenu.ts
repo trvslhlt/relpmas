@@ -15,15 +15,57 @@
 // re-render (e.g. adding an effect), rather than snapping back to fully
 // zoomed out every time.
 
+import { getEffectParamOptions } from "bruit-kit/audio";
 import {
+  EFFECT_TABLE,
   type Field,
   type WaveformRange,
   createZoomableWaveformRangeView,
   effectsFields,
   renderFields,
 } from "bruit-kit/ui";
-import type { ModulationRoute, MotionConfig, SampleNode } from "./sampleNode";
+import {
+  type LfoRoute,
+  type MotionConfig,
+  NO_TARGET_EFFECT,
+  type SampleNode,
+  type SweepRoute,
+} from "./sampleNode";
 import type { SampleNodeEngine } from "./sampleNodeEngine";
+
+/** Options for a "target effect" <select>, from the node's *current*
+ * effects list -- never free-typed (see targetParamOptions' own doc for
+ * why this matters). Always includes a "None" entry (NO_TARGET_EFFECT). */
+function targetEffectOptions(
+  node: SampleNode,
+): { value: string; label: string }[] {
+  return [
+    { value: String(NO_TARGET_EFFECT), label: "None" },
+    ...node.effects.map((spec, i) => ({
+      value: String(i),
+      label: `${i}: ${EFFECT_TABLE.find((e) => e.type === spec.type)?.label ?? spec.type}`,
+    })),
+  ];
+}
+
+/** Options for a "target param" <select>, populated from bruit-kit's
+ * getEffectParamOptions for whichever effect targetEffectIndex currently
+ * resolves to -- this is the whole point of the split from the old
+ * free-text "target param" field: the user picks from what that specific
+ * effect actually exposes, never types a property name from memory.
+ * Empty (not undefined) when the index doesn't resolve or that effect
+ * type exposes nothing modulatable (e.g. "gain", "pitchShift"). */
+function targetParamOptions(
+  node: SampleNode,
+  targetEffectIndex: number,
+): { value: string; label: string }[] {
+  const spec = node.effects[targetEffectIndex];
+  if (!spec) return [];
+  return getEffectParamOptions(spec.type).map((opt) => ({
+    value: opt.key,
+    label: opt.label,
+  }));
+}
 
 export interface NodeMenuHandle {
   open(id: string): void;
@@ -97,7 +139,8 @@ export function createNodeMenu(
   const durationSection = createSection("Duration");
   const firingSection = createSection("Firing pattern");
   const positionMotionSection = createSection("Position motion");
-  const modulationSection = createSection("Modulation route");
+  const sweepSection = createSection("Sweep");
+  const lfoSection = createSection("LFO");
   const effectsSection = createSection("Effects");
 
   panelEl.append(
@@ -108,7 +151,8 @@ export function createNodeMenu(
     durationSection.details,
     firingSection.details,
     positionMotionSection.details,
-    modulationSection.details,
+    sweepSection.details,
+    lfoSection.details,
     effectsSection.details,
   );
 
@@ -214,49 +258,61 @@ export function createNodeMenu(
     ];
   }
 
-  function modulationRouteFields(node: SampleNode): Field[] {
-    const route = node.modulationRoute;
+  function sweepRouteFields(node: SampleNode): Field[] {
+    const route = node.sweepRoute;
     // Same stale-closure hazard as motionFields' updateMotion -- reads the
     // freshest route at call time rather than the one captured above.
-    const updateRoute = (patch: Partial<ModulationRoute>) => {
-      const current = engine.getNode(node.id)?.modulationRoute ?? route;
-      update({ modulationRoute: { ...current, ...patch } });
+    // Goes through engine.setNodeSweepRoute (not the generic update())
+    // since that's also where a disabled/retargeted route's pending
+    // automation gets cancelled -- see its own doc comment.
+    const updateRoute = (patch: Partial<SweepRoute>) => {
+      const current = engine.getNode(node.id)?.sweepRoute ?? route;
+      engine.setNodeSweepRoute(node.id, { ...current, ...patch });
+      onNodeChanged();
     };
+    const paramOptions = targetParamOptions(node, route.targetEffectIndex);
     return [
       {
-        key: "mod-enabled",
-        label: "Modulation route enabled",
+        key: "sweep-enabled",
+        label: "Sweep enabled",
         kind: "checkbox",
         value: route.enabled,
         onChange: (value) => updateRoute({ enabled: value }),
       },
       {
-        key: "mod-effect-index",
-        label: "Target effect index",
-        kind: "number",
-        value: route.targetEffectIndex,
-        min: 0,
-        max: 15,
-        step: 1,
+        key: "sweep-effect",
+        label: "Target effect",
+        kind: "select",
+        value: String(route.targetEffectIndex),
+        options: targetEffectOptions(node),
         indented: true,
-        onChange: (value) => updateRoute({ targetEffectIndex: value }),
+        onChange: (value) => {
+          const targetEffectIndex = Number(value);
+          const options = targetParamOptions(node, targetEffectIndex);
+          updateRoute({
+            targetEffectIndex,
+            targetParamKey: options[0]?.value ?? "",
+          });
+          // The param dropdown below's options depend on this selection --
+          // needs a full refresh to show the newly-targeted effect's own
+          // params instead of the previous effect's.
+          render();
+        },
       },
       {
-        key: "mod-param-key",
-        label: "Target param (e.g. frequencyParam)",
-        kind: "text",
+        key: "sweep-param",
+        label: "Target param",
+        kind: "select",
         value: route.targetParamKey,
+        options:
+          paramOptions.length > 0
+            ? paramOptions
+            : [{ value: "", label: "(no params)" }],
+        indented: true,
         onChange: (value) => updateRoute({ targetParamKey: value }),
       },
       {
-        key: "mod-use-modulator",
-        label: "Route through LFO (vs. direct sweep)",
-        kind: "checkbox",
-        value: route.useModulator,
-        onChange: (value) => updateRoute({ useModulator: value }),
-      },
-      {
-        key: "mod-duration",
+        key: "sweep-duration",
         label: "Sweep duration (s)",
         kind: "range",
         value: route.durationSeconds,
@@ -267,8 +323,8 @@ export function createNodeMenu(
         onChange: (value) => updateRoute({ durationSeconds: value }),
       },
       {
-        key: "mod-value-min",
-        label: route.useModulator ? "Rate min (Hz)" : "Value min",
+        key: "sweep-value-min",
+        label: "Value min",
         kind: "number",
         value: route.valueMin,
         step: 1,
@@ -276,8 +332,8 @@ export function createNodeMenu(
         onChange: (value) => updateRoute({ valueMin: value }),
       },
       {
-        key: "mod-value-max",
-        label: route.useModulator ? "Rate max (Hz)" : "Value max",
+        key: "sweep-value-max",
+        label: "Value max",
         kind: "number",
         value: route.valueMax,
         step: 1,
@@ -285,15 +341,99 @@ export function createNodeMenu(
         onChange: (value) => updateRoute({ valueMax: value }),
       },
       {
-        key: "mod-curve",
-        label: route.useModulator ? "LFO rate curve" : "Sweep curve",
+        key: "sweep-curve",
+        label: "Sweep curve",
+        kind: "automation",
+        points: route.curvePoints,
+        onChange: (points) => updateRoute({ curvePoints: points }),
+      },
+    ];
+  }
+
+  function lfoRouteFields(node: SampleNode): Field[] {
+    const route = node.lfoRoute;
+    const updateRoute = (patch: Partial<LfoRoute>) => {
+      const current = engine.getNode(node.id)?.lfoRoute ?? route;
+      engine.setNodeLfoRoute(node.id, { ...current, ...patch });
+      onNodeChanged();
+    };
+    const paramOptions = targetParamOptions(node, route.targetEffectIndex);
+    return [
+      {
+        key: "lfo-enabled",
+        label: "LFO enabled",
+        kind: "checkbox",
+        value: route.enabled,
+        onChange: (value) => updateRoute({ enabled: value }),
+      },
+      {
+        key: "lfo-effect",
+        label: "Target effect",
+        kind: "select",
+        value: String(route.targetEffectIndex),
+        options: targetEffectOptions(node),
+        indented: true,
+        onChange: (value) => {
+          const targetEffectIndex = Number(value);
+          const options = targetParamOptions(node, targetEffectIndex);
+          updateRoute({
+            targetEffectIndex,
+            targetParamKey: options[0]?.value ?? "",
+          });
+          render();
+        },
+      },
+      {
+        key: "lfo-param",
+        label: "Target param",
+        kind: "select",
+        value: route.targetParamKey,
+        options:
+          paramOptions.length > 0
+            ? paramOptions
+            : [{ value: "", label: "(no params)" }],
+        indented: true,
+        onChange: (value) => updateRoute({ targetParamKey: value }),
+      },
+      {
+        key: "lfo-duration",
+        label: "Sweep duration (s)",
+        kind: "range",
+        value: route.durationSeconds,
+        min: 0.05,
+        max: 10,
+        step: 0.05,
+        indented: true,
+        onChange: (value) => updateRoute({ durationSeconds: value }),
+      },
+      {
+        key: "lfo-rate-min",
+        label: "Rate min (Hz)",
+        kind: "number",
+        value: route.valueMin,
+        step: 1,
+        indented: true,
+        onChange: (value) => updateRoute({ valueMin: value }),
+      },
+      {
+        key: "lfo-rate-max",
+        label: "Rate max (Hz)",
+        kind: "number",
+        value: route.valueMax,
+        step: 1,
+        indented: true,
+        onChange: (value) => updateRoute({ valueMax: value }),
+      },
+      {
+        key: "lfo-rate-curve",
+        label: "Rate curve",
         kind: "automation",
         points: route.curvePoints,
         onChange: (points) => updateRoute({ curvePoints: points }),
       },
       {
-        key: "mod-depth-min",
-        label: "LFO depth min",
+        key: "lfo-depth-min",
+        label: "Depth min",
         kind: "number",
         value: route.depthMin,
         step: 1,
@@ -301,8 +441,8 @@ export function createNodeMenu(
         onChange: (value) => updateRoute({ depthMin: value }),
       },
       {
-        key: "mod-depth-max",
-        label: "LFO depth max",
+        key: "lfo-depth-max",
+        label: "Depth max",
         kind: "number",
         value: route.depthMax,
         step: 1,
@@ -310,8 +450,8 @@ export function createNodeMenu(
         onChange: (value) => updateRoute({ depthMax: value }),
       },
       {
-        key: "mod-depth-curve",
-        label: "LFO depth curve",
+        key: "lfo-depth-curve",
+        label: "Depth curve",
         kind: "automation",
         points: route.depthCurvePoints,
         onChange: (points) => updateRoute({ depthCurvePoints: points }),
@@ -494,7 +634,8 @@ export function createNodeMenu(
       positionMotionSection.body,
       motionFields(node, "positionMotion", "Position"),
     );
-    renderFields(modulationSection.body, modulationRouteFields(node));
+    renderFields(sweepSection.body, sweepRouteFields(node));
+    renderFields(lfoSection.body, lfoRouteFields(node));
     renderFields(
       effectsSection.body,
       effectsFields(
