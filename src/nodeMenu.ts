@@ -138,8 +138,18 @@ export function createNodeMenu(
     labelPrefix: string,
   ): Field[] {
     const config = node[key];
-    const updateMotion = (patch: Partial<MotionConfig>) =>
-      update({ [key]: { ...config, ...patch } });
+    // Reads the freshest config at call time, not the `config` captured
+    // above -- these fields' onChange handlers all survive from the last
+    // render() with no re-render in between (update() never re-renders;
+    // only effectsFields' own onChange does), so spreading the stale
+    // closured `config` here would silently revert whatever an earlier
+    // field's own change in this same visit had just set (e.g. flipping
+    // mode to "curve" then adjusting min would spread from the
+    // still-"none" snapshot and undo the mode change).
+    const updateMotion = (patch: Partial<MotionConfig>) => {
+      const current = engine.getNode(node.id)?.[key] ?? config;
+      update({ [key]: { ...current, ...patch } });
+    };
     return [
       {
         key: `${key}-mode`,
@@ -206,8 +216,12 @@ export function createNodeMenu(
 
   function modulationRouteFields(node: SampleNode): Field[] {
     const route = node.modulationRoute;
-    const updateRoute = (patch: Partial<ModulationRoute>) =>
-      update({ modulationRoute: { ...route, ...patch } });
+    // Same stale-closure hazard as motionFields' updateMotion -- reads the
+    // freshest route at call time rather than the one captured above.
+    const updateRoute = (patch: Partial<ModulationRoute>) => {
+      const current = engine.getNode(node.id)?.modulationRoute ?? route;
+      update({ modulationRoute: { ...current, ...patch } });
+    };
     return [
       {
         key: "mod-enabled",
