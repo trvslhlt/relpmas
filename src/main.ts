@@ -1,4 +1,4 @@
-import { Recorder, extensionForMimeType } from "bruit-kit/audio";
+import { Recorder, audioBufferToWavBlob } from "bruit-kit/audio";
 import {
   createMultiMarkerWaveformView,
   effectsFields,
@@ -69,12 +69,19 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     downloadLinkEl.hidden = true;
   });
   stopRecordButtonEl.addEventListener("click", async () => {
-    const { blob, mimeType } = await recorder.stop();
+    const { blob } = await recorder.stop();
     recordButtonEl.disabled = false;
     stopRecordButtonEl.disabled = true;
-    const url = URL.createObjectURL(blob);
+    // MediaRecorder (inside Recorder) can't produce WAV directly -- decode
+    // whatever it did produce (webm/mp4) back into an AudioBuffer, then
+    // re-encode that as WAV for a universally-compatible download.
+    const decoded = await audioContext.decodeAudioData(
+      await blob.arrayBuffer(),
+    );
+    const wavBlob = audioBufferToWavBlob(decoded);
+    const url = URL.createObjectURL(wavBlob);
     downloadLinkEl.href = url;
-    downloadLinkEl.download = `relpmas-recording.${extensionForMimeType(mimeType)}`;
+    downloadLinkEl.download = "relpmas-recording.wav";
     downloadLinkEl.textContent = "Download recording";
     downloadLinkEl.hidden = false;
   });

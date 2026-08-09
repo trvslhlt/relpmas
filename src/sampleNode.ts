@@ -61,20 +61,35 @@ export interface MotionConfig {
   max: number;
 }
 
-export function createMotionConfig(min: number, max: number): MotionConfig {
+export function createMotionConfig(
+  min: number,
+  max: number,
+  curvePoints: AutomationPoint[] = [
+    { position: 0, value: 1 },
+    { position: 0.3, value: 0.4 },
+    { position: 0.6, value: 0.15 },
+    { position: 1, value: 0.05 },
+  ],
+): MotionConfig {
   return {
     mode: "none",
-    curvePoints: [
-      { position: 0, value: 1 },
-      { position: 0.3, value: 0.4 },
-      { position: 0.6, value: 0.15 },
-      { position: 1, value: 0.05 },
-    ],
+    curvePoints,
     curveDurationSeconds: 4,
     wanderSpeed: 0.5,
     min,
     max,
   };
+}
+
+/** A plain two-point ramp from the curve's lowest output to its highest --
+ * a fresh array per call (never a shared module-level constant), since
+ * curvePoints is meant to be freely replaceable per node without any risk
+ * of one node's edit reaching another's. */
+function ascendingCurve(): AutomationPoint[] {
+  return [
+    { position: 0, value: 0 },
+    { position: 1, value: 1 },
+  ];
 }
 
 /** A sample node's authored, static configuration -- its live state (which
@@ -189,7 +204,7 @@ export function createSampleNode(color: string): SampleNode {
     triggerPeriodSeconds: 0.5,
 
     firingPattern: "single",
-    fireCount: 6,
+    fireCount: 10,
     intervalCurve: [
       { position: 0, value: 1 },
       { position: 0.5, value: 0.35 },
@@ -204,9 +219,11 @@ export function createSampleNode(color: string): SampleNode {
     // user opts in. Duration motion's [min,max] is a fraction of the
     // range's own length -- clamped to a 0.01 floor regardless of this
     // config (see SampleNodeEngine.rangeAtTime) so it can never fully
-    // silence a fire.
-    positionMotion: createMotionConfig(0, 0.9),
-    durationMotion: createMotionConfig(0.02, 0.4),
+    // silence a fire. Both default to a plain low-to-high ramp rather
+    // than the generic decay shape -- a predictable sweep to opt into,
+    // not a specific creative choice baked into the default.
+    positionMotion: createMotionConfig(0, 1.0, ascendingCurve()),
+    durationMotion: createMotionConfig(0.01, 1.0, ascendingCurve()),
 
     effects: [],
     modulationRoute: createModulationRoute(),

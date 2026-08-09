@@ -77,6 +77,16 @@ export function createPatchGraphView(
 
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("class", "patch-graph-svg");
+  // Without this, the default preserveAspectRatio ("xMidYMid meet")
+  // letterboxes the viewBox to fit within the actual (wider) rendered
+  // box instead of stretching to fill it -- localPoint()'s mouse-to-SVG
+  // conversion assumes the bounding box maps 1:1 onto the viewBox, which
+  // silently breaks (the drag line tracks faster than the cursor) the
+  // moment there's a mismatch between the two aspect ratios. Every other
+  // SVG widget in this codebase (zoomableWaveformRangeView.ts,
+  // multiMarkerWaveformView.ts, ...) already sets this for the same
+  // reason.
+  svg.setAttribute("preserveAspectRatio", "none");
   container.innerHTML = "";
   container.appendChild(svg);
 
