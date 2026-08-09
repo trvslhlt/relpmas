@@ -551,27 +551,35 @@ export class SampleNodeEngine {
       1,
     );
 
-    const wrappedLocalStart = wrapFraction(localStart);
     // Floored at 0.01 (not 0) per durationMotion's own contract -- a
     // fire's duration can shrink to a sliver but never fully silence.
-    // Capped just under 1 (not at 1) for a different reason: a local
-    // duration of exactly 1 would wrap-add back onto wrappedLocalStart
-    // exactly (x + 1 mod 1 === x), making the "full range" case
-    // indistinguishable from a near-zero one once mapped through
-    // wrapFraction. The lost sliver is far below audible/one-sample
-    // resolution for any real buffer.
-    const clampedLocalDuration = Math.min(
-      1 - 1e-6,
-      Math.max(0.01, localDuration),
-    );
-    const wrappedLocalEnd = wrapFraction(
-      wrappedLocalStart + clampedLocalDuration,
-    );
+    // Capped at 1 (a full lap of the range, no more) since "both" mode can
+    // sum curve+wander past either alone (see motionValue's own doc) --
+    // unlike the old formula this replaces, there's no precision reason
+    // for the cap anymore, just a semantic one: more than one full lap
+    // wraps back on itself and would just as likely show *less* than a
+    // full range's worth once wrapped, not more.
+    const clampedLocalDuration = Math.min(1, Math.max(0.01, localDuration));
 
-    return {
-      start: wrapFraction(rangeStart + wrappedLocalStart * rangeLength),
-      end: wrapFraction(rangeStart + wrappedLocalEnd * rangeLength),
-    };
+    // end is computed directly from the *absolute* start plus the local
+    // duration scaled by rangeLength, wrapped exactly once -- not by
+    // wrapping a separate "local end" (start + duration, wrapped in local
+    // 0..1 terms) and then rescaling *that* into absolute space. The two
+    // are mathematically equivalent, but the latter loses precision right
+    // where it matters most: wrapping a near-1 local duration first
+    // produces a value a few ULPs below wrappedLocalStart, and rescaling
+    // that by a small rangeLength (e.g. 0.4) can round the tiny gap's
+    // *sign*, turning "almost the full range" into "almost nothing" --
+    // exactly backwards, and only once position motion made start != 0
+    // (with start pinned at 0, rescaling a sub-1 local end never crosses
+    // zero, which is why this stayed hidden until position motion was
+    // exercised alongside duration motion).
+    const start = wrapFraction(
+      rangeStart + wrapFraction(localStart) * rangeLength,
+    );
+    const end = wrapFraction(start + clampedLocalDuration * rangeLength);
+
+    return { start, end };
   }
 
   private motionValue(
