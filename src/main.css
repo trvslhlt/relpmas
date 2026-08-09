@@ -271,6 +271,13 @@ input[type="file"] {
   gap: 0.5rem;
   position: sticky;
   top: 0;
+  /* Without this, the embedded waveform's own SVG (a later sibling of
+   * this sticky header, but z-index:auto like the header itself) painted
+   * on top of the header once scrolled content put them at the same
+   * screen position -- an explicit z-index resolves the tie in the
+   * header's favor, keeping it visible above every section as the panel
+   * scrolls, not just the ones below the waveform. */
+  z-index: 2;
   background: var(--panel-bg);
   padding-bottom: 0.5rem;
   margin-bottom: 0.5rem;
