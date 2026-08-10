@@ -30,6 +30,7 @@ import {
   NO_TARGET_EFFECT,
   type SampleNode,
   type SweepRoute,
+  wrappedLength,
 } from "./sampleNode";
 import type { SampleNodeEngine } from "./sampleNodeEngine";
 
@@ -114,6 +115,17 @@ export function createNodeMenu(
   const waveformContainer = document.createElement("div");
   waveformContainer.className = "node-menu-waveform";
 
+  // Rate-adjusted (not just the raw selection length) -- this is how long
+  // a fire of the node's *current* range actually plays, same formula
+  // trigger() itself uses (see selectionDurationSeconds), so it lines up
+  // with what "Snap to selection" below sets triggerPeriodSeconds to. A
+  // persistent element updated directly rather than a field in
+  // generalFields, so a drag on the embedded waveform can refresh it
+  // without paying a full panel re-render per pointermove (see
+  // ensureWaveform's onChange).
+  const selectionDurationEl = document.createElement("div");
+  selectionDurationEl.className = "node-menu-selection-duration";
+
   /** One collapsible section (a native <details>/<summary>), built once so
    * its open/closed state survives re-renders -- render() only ever
    * touches `body`'s contents via renderFields, never recreates the
@@ -146,6 +158,7 @@ export function createNodeMenu(
   panelEl.append(
     header,
     waveformContainer,
+    selectionDurationEl,
     generalSection.details,
     playbackSection.details,
     durationSection.details,
@@ -174,6 +187,26 @@ export function createNodeMenu(
     if (!currentId) return;
     engine.updateNode(currentId, patch);
     onNodeChanged();
+  }
+
+  /** How long a fire of this node's *current* range actually plays, at its
+   * current rate -- the same `wrappedLength(...) * buffer.duration / rate`
+   * formula SampleNodeEngine.trigger() itself uses, so "Snap to selection"
+   * (below) sets triggerPeriodSeconds to exactly what one full-length fire
+   * takes. null before a sample is loaded. */
+  function selectionDurationSeconds(node: SampleNode): number | null {
+    const buffer = engine.getBuffer();
+    if (!buffer) return null;
+    const rate = 2 ** (node.rateSemitones / 12);
+    return (
+      (wrappedLength(node.range.start, node.range.end) * buffer.duration) / rate
+    );
+  }
+
+  function updateSelectionDurationDisplay(node: SampleNode): void {
+    const seconds = selectionDurationSeconds(node);
+    selectionDurationEl.textContent =
+      seconds === null ? "Selection: --" : `Selection: ${seconds.toFixed(3)}s`;
   }
 
   function motionFields(
@@ -508,6 +541,22 @@ export function createNodeMenu(
         indented: true,
         onChange: (value) => update({ triggerPeriodSeconds: value }),
       },
+      {
+        key: "triggerPeriodSnap",
+        label: "Snap to selection",
+        kind: "button",
+        // Sets the trigger period to exactly one full-length fire's own
+        // rate-adjusted duration -- with duration motion at "fixed" 1.0
+        // (a fire always plays the range's full length), consecutive
+        // triggers then land exactly as the previous fire ends: a clean,
+        // continuous loop with no gap or overlap.
+        onClick: () => {
+          const seconds = selectionDurationSeconds(node);
+          if (seconds === null) return;
+          update({ triggerPeriodSeconds: seconds });
+          render();
+        },
+      },
     ];
   }
 
@@ -530,7 +579,10 @@ export function createNodeMenu(
         min: -24,
         max: 24,
         step: 1,
-        onChange: (value) => update({ rateSemitones: value }),
+        onChange: (value) => {
+          update({ rateSemitones: value });
+          updateSelectionDurationDisplay(node);
+        },
       },
       {
         key: "fadeMs",
@@ -609,15 +661,20 @@ export function createNodeMenu(
       // external change (e.g. dragged on the main overview waveform)
       // without touching zoom/pan.
       zoomableView.setRange(node.range);
+      updateSelectionDurationDisplay(node);
       return;
     }
     zoomableView = createZoomableWaveformRangeView(waveformContainer, {
       initialRange: node.range,
-      onChange: (range) => update({ range }),
+      onChange: (range) => {
+        update({ range });
+        updateSelectionDurationDisplay(node);
+      },
     });
     const buffer = engine.getBuffer();
     if (buffer) zoomableView.setBuffer(buffer);
     waveformNodeId = node.id;
+    updateSelectionDurationDisplay(node);
   }
 
   function render(): void {
@@ -677,7 +734,10 @@ export function createNodeMenu(
       zoomableView?.setBuffer(buffer);
     },
     syncRange(id, range) {
-      if (id === currentId) zoomableView?.setRange(range);
+      if (id !== currentId) return;
+      zoomableView?.setRange(range);
+      const node = engine.getNode(id);
+      if (node) updateSelectionDurationDisplay(node);
     },
   };
 }

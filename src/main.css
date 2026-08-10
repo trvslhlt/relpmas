@@ -262,6 +262,12 @@ input[type="file"] {
 }
 
 .node-menu-waveform {
+  margin-bottom: 0.35rem;
+}
+
+.node-menu-selection-duration {
+  font-size: 0.8rem;
+  color: var(--text-muted);
   margin-bottom: 1rem;
 }
 
