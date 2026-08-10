@@ -1,4 +1,9 @@
-import { Recorder, audioBufferToWavBlob } from "bruit-kit/audio";
+import {
+  Recorder,
+  audioBufferToWavBlob,
+  preloadPitchShiftWorklet,
+  preloadSampleRateReducerWorklet,
+} from "bruit-kit/audio";
 import {
   createMultiMarkerWaveformView,
   effectsFields,
@@ -40,7 +45,17 @@ const NODE_COLORS = ["#ffb454", "#4c7dff", "#6fdc8c", "#ff6b9d", "#c792ea"];
 
 unlockAudioContext(unlockEl).then(async (audioContext) => {
   const engine = new SampleNodeEngine(audioContext);
-  await engine.init();
+  // Both worklets must be registered before a node's effect chain can
+  // include "Pitch shift" or "Sample Rate Reducer" -- each effect class's
+  // own constructor is synchronous and throws immediately if its
+  // processor isn't registered yet, which previously broke a node's
+  // whole chain (left disconnected mid-rebuild) the instant either was
+  // added, well after this point would have been too late to catch it.
+  await Promise.all([
+    engine.init(),
+    preloadPitchShiftWorklet(audioContext),
+    preloadSampleRateReducerWorklet(audioContext),
+  ]);
   const masterBus = new MasterBus(audioContext, engine.output);
 
   function syncMasterEffectsPanel(): void {
