@@ -200,9 +200,20 @@ export function createNodeMenu(
         label: `${labelPrefix} motion`,
         kind: "select",
         value: config.mode,
-        options: ["none", "curve", "wander", "both"],
+        options: ["none", "fixed", "curve", "wander", "both"],
         onChange: (value) =>
           updateMotion({ mode: value as MotionConfig["mode"] }),
+      },
+      {
+        key: `${key}-fixedValue`,
+        label: `${labelPrefix} fixed value`,
+        kind: "range",
+        value: config.fixedValue,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        indented: true,
+        onChange: (value) => updateMotion({ fixedValue: value }),
       },
       {
         key: `${key}-min`,
@@ -237,17 +248,27 @@ export function createNodeMenu(
         indented: true,
         onChange: (value) => updateMotion({ wanderSpeed: value }),
       },
-      {
-        key: `${key}-curveDuration`,
-        label: `${labelPrefix} curve duration (s)`,
-        kind: "range",
-        value: config.curveDurationSeconds,
-        min: 0.5,
-        max: 20,
-        step: 0.5,
-        indented: true,
-        onChange: (value) => updateMotion({ curveDurationSeconds: value }),
-      },
+      // Position-only: duration's curve component has no continuous-clock
+      // axis to measure against (a single fire is instantaneous relative
+      // to its own trigger; a curveSpaced burst sweeps by fire position
+      // within the burst instead -- see SampleNodeEngine.durationValue's
+      // own doc comment), so this field would do nothing for duration.
+      ...(key === "positionMotion"
+        ? [
+            {
+              key: `${key}-curveDuration`,
+              label: `${labelPrefix} curve duration (s)`,
+              kind: "range" as const,
+              value: config.curveDurationSeconds,
+              min: 0.5,
+              max: 20,
+              step: 0.5,
+              indented: true,
+              onChange: (value: number) =>
+                updateMotion({ curveDurationSeconds: value }),
+            },
+          ]
+        : []),
       {
         key: `${key}-curve`,
         label: `${labelPrefix} curve`,
@@ -310,17 +331,6 @@ export function createNodeMenu(
             : [{ value: "", label: "(no params)" }],
         indented: true,
         onChange: (value) => updateRoute({ targetParamKey: value }),
-      },
-      {
-        key: "sweep-duration",
-        label: "Sweep duration (s)",
-        kind: "range",
-        value: route.durationSeconds,
-        min: 0.05,
-        max: 10,
-        step: 0.05,
-        indented: true,
-        onChange: (value) => updateRoute({ durationSeconds: value }),
       },
       {
         key: "sweep-value-min",

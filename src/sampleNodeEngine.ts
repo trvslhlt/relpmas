@@ -283,7 +283,17 @@ export class SampleNodeEngine {
    * future* value for curve-driven motion (a pure function of time), or
    * the current wander snapshot for wander-driven motion (not
    * predictable ahead of time without simulating the random walk
-   * forward, which isn't worth the complexity here). */
+   * forward, which isn't worth the complexity here).
+   *
+   * Every fire's own time is computed in a first pass (gaps depend only
+   * on intervalCurve/fireCount, never on duration) before any of them
+   * actually fire, so a curveSpaced burst's duration curve can be swept
+   * across the burst's own real span -- first fire = curve start, last
+   * fire = curve end -- rather than sampled off the continuous audio
+   * clock the way it still is for "single" (see rangeAtTime's own doc
+   * comment on why a single fire can't be burst-relative the same way:
+   * with only one fire, "elapsed since trigger start" is always exactly
+   * 0, which would freeze the curve at its own start value forever). */
   trigger(id: string): void {
     const node = this.nodes.get(id);
     const runtime = this.runtime.get(id);
@@ -297,18 +307,25 @@ export class SampleNodeEngine {
 
     this.emitEvent(id, "triggerStart");
 
-    let fireTime = now;
+    const fireTimes = [now];
+    for (let i = 1; i < count; i++) {
+      const t = count > 1 ? i / (count - 1) : 0;
+      const gapMs = sampleCurveAt(node.intervalCurve, t, {
+        min: node.intervalMinMs,
+        max: node.intervalMaxMs,
+      });
+      fireTimes.push(fireTimes[i - 1] + Math.max(0, gapMs) / 1000);
+    }
+    const burstSpan = fireTimes[fireTimes.length - 1] - now;
+
     let lastFireEndTime = now;
     for (let i = 0; i < count; i++) {
-      if (i > 0) {
-        const t = count > 1 ? i / (count - 1) : 0;
-        const gapMs = sampleCurveAt(node.intervalCurve, t, {
-          min: node.intervalMinMs,
-          max: node.intervalMaxMs,
-        });
-        fireTime += Math.max(0, gapMs) / 1000;
-      }
-      const range = this.rangeAtTime(node, runtime, fireTime);
+      const fireTime = fireTimes[i];
+      const burstPosition =
+        node.firingPattern === "curveSpaced" && burstSpan > 0
+          ? (fireTime - now) / burstSpan
+          : null;
+      const range = this.rangeAtTime(node, runtime, fireTime, burstPosition);
       const direction = this.resolveDirection(node, runtime);
       audio.player.playVoice({
         startFraction: range.start,
@@ -363,11 +380,15 @@ export class SampleNodeEngine {
   }
 
   /** Fires once per trigger (not per fire -- see SweepRoute's own doc):
-   * ramps the target AudioParam directly. A target that doesn't resolve
-   * (no effect selected, or the selected effect no longer has that many
-   * params -- realistic if effects were edited after this route was set
-   * up) is silently skipped rather than throwing, same tolerance
-   * BuiltEffectsChain.getAudioParam itself documents. */
+   * ramps the target AudioParam directly, over the node's own
+   * triggerPeriodSeconds rather than an independent duration -- so a
+   * loop-armed node's sweep always resolves exactly as the next trigger
+   * arrives, never mid-ramp or sitting idle at its endpoint waiting for
+   * the next one. A target that doesn't resolve (no effect selected, or
+   * the selected effect no longer has that many params -- realistic if
+   * effects were edited after this route was set up) is silently skipped
+   * rather than throwing, same tolerance BuiltEffectsChain.getAudioParam
+   * itself documents. */
   private triggerSweepRoute(
     node: SampleNode,
     audio: NodeAudio,
@@ -384,7 +405,7 @@ export class SampleNodeEngine {
       target,
       route.curvePoints,
       this.audioContext,
-      route.durationSeconds,
+      node.triggerPeriodSeconds,
       { min: route.valueMin, max: route.valueMax },
       atTime,
     );
@@ -526,11 +547,16 @@ export class SampleNodeEngine {
    * the very end, so a fire can never land outside the selected range. A
    * local fragment that would run past the range's own end wraps back to
    * the range's own start, same wraparound semantics as the range itself
-   * (see wrappedLength's own doc comment) just rescoped one level in. */
+   * (see wrappedLength's own doc comment) just rescoped one level in.
+   *
+   * `burstPosition` (0..1, or null) is trigger()'s own precomputed
+   * "how far through this curveSpaced burst is this fire" -- fed to
+   * durationValue, see its own doc comment for what it does with it. */
   private rangeAtTime(
     node: SampleNode,
     runtime: NodeRuntime,
     atTime: number,
+    burstPosition: number | null = null,
   ): WaveformRange {
     const rangeStart = node.range.start;
     const rangeLength = wrappedLength(node.range.start, node.range.end);
@@ -544,10 +570,10 @@ export class SampleNodeEngine {
       atTime,
       0,
     );
-    const localDuration = this.motionValue(
+    const localDuration = this.durationValue(
       node.durationMotion,
       runtime.durationWander,
-      atTime,
+      burstPosition,
       1,
     );
 
@@ -582,6 +608,12 @@ export class SampleNodeEngine {
     return { start, end };
   }
 
+  /** Position motion only -- continuous, evaluated against the audio
+   * clock regardless of firing pattern, since it also drives the
+   * always-visible live overlay (tick()'s own call has no trigger to be
+   * relative to in the first place). See durationValue for why duration
+   * needs a genuinely different evaluation, not just this same function
+   * reused. */
   private motionValue(
     config: MotionConfig,
     wander: WanderState | null,
@@ -589,6 +621,7 @@ export class SampleNodeEngine {
     fallback: number,
   ): number {
     if (config.mode === "none") return fallback;
+    if (config.mode === "fixed") return config.fixedValue;
     const range = { min: config.min, max: config.max };
     const curveValue =
       config.mode === "curve" || config.mode === "both"
@@ -608,6 +641,43 @@ export class SampleNodeEngine {
       // MotionConfig's own doc comment. rangeAtTime clamps the final
       // composed start/length hard against buffer bounds regardless, so
       // exceeding either contribution alone here is safe.
+      return curveValue + wanderValue - (config.min + config.max) / 2;
+    }
+    return curveValue ?? wanderValue ?? fallback;
+  }
+
+  /** Duration motion only. Unlike position, duration's curve component has
+   * no meaningful continuous-clock axis to sample: a single fire is
+   * instantaneous relative to its own trigger (see trigger()'s own doc
+   * comment), so there's nothing coherent for curveDurationSeconds to
+   * measure elapsed time against for duration specifically -- ignored
+   * here entirely (config.curveDurationSeconds is a MotionConfig field
+   * shared with position, which still uses it). When burstPosition is
+   * available (a curveSpaced fire), the curve is sampled directly at
+   * that position, sweeping once across the burst. Without one (a single
+   * fire), it's sampled at its own start (0) -- a deterministic, boring
+   * fallback by design: "fixed" mode is the intended way to get a
+   * specific constant duration on a single fire. Wander is unaffected --
+   * it already has its own independent time-driven mechanism
+   * (wanderSpeed), continuous regardless of firing pattern. */
+  private durationValue(
+    config: MotionConfig,
+    wander: WanderState | null,
+    burstPosition: number | null,
+    fallback: number,
+  ): number {
+    if (config.mode === "none") return fallback;
+    if (config.mode === "fixed") return config.fixedValue;
+    const range = { min: config.min, max: config.max };
+    const curveValue =
+      config.mode === "curve" || config.mode === "both"
+        ? sampleCurveAt(config.curvePoints, burstPosition ?? 0, range)
+        : null;
+    const wanderValue =
+      (config.mode === "wander" || config.mode === "both") && wander
+        ? wander.current
+        : null;
+    if (curveValue !== null && wanderValue !== null) {
       return curveValue + wanderValue - (config.min + config.max) / 2;
     }
     return curveValue ?? wanderValue ?? fallback;

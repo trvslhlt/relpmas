@@ -34,7 +34,7 @@ export type ArmMode = "manual" | "loop";
  * produces `fireCount` fires, gapped according to `intervalCurve`. */
 export type FiringPattern = "single" | "curveSpaced";
 
-export type MotionMode = "none" | "curve" | "wander" | "both";
+export type MotionMode = "none" | "fixed" | "curve" | "wander" | "both";
 
 /** Config for one of a node's two independently-modulated live scalars
  * (position or duration -- see SampleNode.positionMotion/durationMotion).
@@ -43,17 +43,23 @@ export type MotionMode = "none" | "curve" | "wander" | "both";
  * not the whole buffer -- the range is the candidate playback area, and
  * motion only ever moves within it (see SampleNodeEngine.rangeAtTime).
  * For position, 0 = the range's own start, 1 = its own end. For duration,
- * 0 = (clamped to) a sliver, 1 = the range's own full length. `curvePoints`/
- * `curveDurationSeconds` apply when mode is "curve" or "both": elapsed
- * time, looped over curveDurationSeconds, maps through the curve into
- * [min, max]. `wanderSpeed` applies when mode is "wander" or "both":
- * bruit-kit's driftMath retarget-then-glide random walk, also remapped
- * into [min, max]. "both" sums the two contributions (each still
- * independently within [min,max] before summing, so the combined result
- * can exceed either alone -- deliberately, more range of motion is the
- * point of layering both). */
+ * 0 = (clamped to) a sliver, 1 = the range's own full length. `fixedValue`
+ * applies when mode is "fixed": a constant local value, unlike "none"
+ * (whose fallback is baked into the caller -- range start for position,
+ * full range length for duration) this is user-set and can be any value
+ * in between, e.g. "always exactly 35% of the range's length" rather than
+ * always 0% or always 100%. `curvePoints`/`curveDurationSeconds` apply
+ * when mode is "curve" or "both": elapsed time, looped over
+ * curveDurationSeconds, maps through the curve into [min, max].
+ * `wanderSpeed` applies when mode is "wander" or "both": bruit-kit's
+ * driftMath retarget-then-glide random walk, also remapped into
+ * [min, max]. "both" sums the two contributions (each still independently
+ * within [min,max] before summing, so the combined result can exceed
+ * either alone -- deliberately, more range of motion is the point of
+ * layering both). */
 export interface MotionConfig {
   mode: MotionMode;
+  fixedValue: number;
   curvePoints: AutomationPoint[];
   curveDurationSeconds: number;
   wanderSpeed: number;
@@ -70,9 +76,11 @@ export function createMotionConfig(
     { position: 0.6, value: 0.15 },
     { position: 1, value: 0.05 },
   ],
+  fixedValue = 1,
 ): MotionConfig {
   return {
     mode: "none",
+    fixedValue,
     curvePoints,
     curveDurationSeconds: 4,
     wanderSpeed: 0.5,
@@ -150,18 +158,21 @@ export interface SampleNode {
  * index into SampleNode.effects. */
 export const NO_TARGET_EFFECT = -1;
 
-/** "On trigger, ramp param X along a curve over durationSeconds" --
- * targeting one of this node's own chain effects' exposed AudioParams
- * (via BuiltEffectsChain.getAudioParam(targetEffectIndex,
- * targetParamKey), populated in the UI from bruit-kit's
- * getEffectParamOptions rather than typed in free-form -- see
- * SampleNodeEngine.trigger()/setNodeSweepRoute). */
+/** "On trigger, ramp param X along a curve over the node's own
+ * triggerPeriodSeconds" -- targeting one of this node's own chain
+ * effects' exposed AudioParams (via BuiltEffectsChain.getAudioParam(
+ * targetEffectIndex, targetParamKey), populated in the UI from
+ * bruit-kit's getEffectParamOptions rather than typed in free-form).
+ * No separate duration field: the ramp always follows the node's own
+ * trigger period (loop mode's actual cadence, or just its configured
+ * value for manual/graph-driven triggers) rather than an independently
+ * tunable number that could drift out of sync with it -- see
+ * SampleNodeEngine.trigger()/setNodeSweepRoute. */
 export interface SweepRoute {
   enabled: boolean;
   targetEffectIndex: number;
   targetParamKey: string;
   curvePoints: AutomationPoint[];
-  durationSeconds: number;
   valueMin: number;
   valueMax: number;
 }
@@ -175,7 +186,6 @@ export function createSweepRoute(): SweepRoute {
       { position: 0, value: 0 },
       { position: 1, value: 1 },
     ],
-    durationSeconds: 1,
     valueMin: 200,
     valueMax: 4000,
   };
@@ -257,8 +267,8 @@ export function createSampleNode(color: string): SampleNode {
     // silence a fire. Both default to a plain low-to-high ramp rather
     // than the generic decay shape -- a predictable sweep to opt into,
     // not a specific creative choice baked into the default.
-    positionMotion: createMotionConfig(0, 1.0, ascendingCurve()),
-    durationMotion: createMotionConfig(0.01, 1.0, ascendingCurve()),
+    positionMotion: createMotionConfig(0, 1.0, ascendingCurve(), 0),
+    durationMotion: createMotionConfig(0.01, 1.0, ascendingCurve(), 1),
 
     effects: [],
     sweepRoute: createSweepRoute(),
