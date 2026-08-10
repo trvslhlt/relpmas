@@ -50,12 +50,14 @@ const GAP = 30;
 const OUT_EVENTS: NodeEventType[] = [
   "triggerStart",
   "triggerEnd",
+  "periodEnd",
   "fireStart",
   "fireEnd",
 ];
 const OUT_EVENT_LABELS: Record<NodeEventType, string> = {
   triggerStart: "trigS",
   triggerEnd: "trigE",
+  periodEnd: "perE",
   fireStart: "fireS",
   fireEnd: "fireE",
 };

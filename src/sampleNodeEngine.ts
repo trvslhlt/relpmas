@@ -24,12 +24,18 @@ import {
 
 /** Two granularities: triggerStart/triggerEnd span a whole firing burst;
  * fireStart/fireEnd are per individual fire, for cascades that should
- * respond to each bounce. */
+ * respond to each bounce. periodEnd is a third, independent timing: it
+ * always lands exactly triggerPeriodSeconds after triggerStart, regardless
+ * of how long the fires themselves actually take to play -- for cascades
+ * that should wait out the node's own configured cadence rather than
+ * however long its audio happens to last (see trigger()'s own doc
+ * comment on why triggerEnd can't be reused for this). */
 export type NodeEventType =
   | "triggerStart"
   | "triggerEnd"
   | "fireStart"
-  | "fireEnd";
+  | "fireEnd"
+  | "periodEnd";
 
 export interface GraphEdge {
   id: string;
@@ -344,6 +350,7 @@ export class SampleNodeEngine {
       this.scheduleEvent(id, "fireEnd", fireEndTime - now);
     }
     this.scheduleEvent(id, "triggerEnd", lastFireEndTime - now);
+    this.scheduleEvent(id, "periodEnd", node.triggerPeriodSeconds);
 
     this.triggerSweepRoute(node, audio, now);
     this.triggerLfoRoute(node, audio, now);
