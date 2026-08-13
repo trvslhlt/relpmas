@@ -551,16 +551,6 @@ export class SampleNodeEngine {
     });
   }
 
-  /** The rate multiplier a fresh single fire would use right now, with no
-   * burst context -- same fixed/curve-at-0 evaluation fireNow() itself
-   * uses (see perFireValue's own doc comment). Exposed for the node
-   * menu's selection-duration display and "Snap to selection" (see
-   * nodeMenu.ts's selectionDurationSeconds), which need to preview a
-   * representative rate without actually firing anything. */
-  previewRateMultiplier(node: SampleNode): number {
-    return this.perFireValue(node.rateMotion, null, null, 1);
-  }
-
   private resolveDirection(
     node: SampleNode,
     runtime: NodeRuntime,

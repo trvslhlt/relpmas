@@ -115,14 +115,12 @@ export function createNodeMenu(
   const waveformContainer = document.createElement("div");
   waveformContainer.className = "node-menu-waveform";
 
-  // Rate-adjusted (not just the raw selection length) -- this is how long
-  // a fire of the node's *current* range actually plays, same formula
-  // trigger() itself uses (see selectionDurationSeconds), so it lines up
-  // with what "Snap to selection" below sets triggerPeriodSeconds to. A
-  // persistent element updated directly rather than a field in
-  // generalFields, so a drag on the embedded waveform can refresh it
-  // without paying a full panel re-render per pointermove (see
-  // ensureWaveform's onChange).
+  // The node's *current* range length at 1.0x, deliberately not
+  // rate-adjusted (see selectionDurationSeconds) -- what "Snap to
+  // selection" below sets triggerPeriodSeconds to. A persistent element
+  // updated directly rather than a field in generalFields, so a drag on
+  // the embedded waveform can refresh it without paying a full panel
+  // re-render per pointermove (see ensureWaveform's onChange).
   const selectionDurationEl = document.createElement("div");
   selectionDurationEl.className = "node-menu-selection-duration";
 
@@ -191,20 +189,19 @@ export function createNodeMenu(
     onNodeChanged();
   }
 
-  /** How long a fire of this node's *current* range actually plays, at its
-   * current rate -- the same `wrappedLength(...) * buffer.duration / rate`
-   * formula SampleNodeEngine.trigger() itself uses (rate via
-   * previewRateMultiplier, since rateMotion's curve mode is evaluated per
-   * fire, not read directly off the node), so "Snap to selection" (below)
-   * sets triggerPeriodSeconds to exactly what one full-length fire takes.
-   * null before a sample is loaded. */
+  /** How long the node's *current* range is at 1.0x -- deliberately not
+   * rate-adjusted. rateMotion's curve mode is a per-fire value (sampled
+   * fresh per fire in a burst, see SampleNodeEngine.trigger()'s own
+   * rateMultiplier computation), so factoring it into this single preview
+   * number produced confusing, cascading behavior once rate curves were
+   * in play (which fire's rate would even apply?) -- this now stays a
+   * plain, predictable "how much of the buffer is selected" readout, and
+   * "Snap to selection" (below) sets triggerPeriodSeconds to exactly that
+   * unadjusted length. null before a sample is loaded. */
   function selectionDurationSeconds(node: SampleNode): number | null {
     const buffer = engine.getBuffer();
     if (!buffer) return null;
-    const rate = engine.previewRateMultiplier(node);
-    return (
-      (wrappedLength(node.range.start, node.range.end) * buffer.duration) / rate
-    );
+    return wrappedLength(node.range.start, node.range.end) * buffer.duration;
   }
 
   function updateSelectionDurationDisplay(node: SampleNode): void {
@@ -254,13 +251,6 @@ export function createNodeMenu(
     const updateMotion = (patch: Partial<MotionConfig>) => {
       const current = engine.getNode(node.id)?.[key] ?? config;
       update({ [key]: { ...current, ...patch } });
-      // rateMotion is the only one of the three that feeds into the
-      // selection-duration display/snap (see selectionDurationSeconds) --
-      // position/duration motion don't affect it.
-      if (key === "rateMotion") {
-        const fresh = engine.getNode(node.id);
-        if (fresh) updateSelectionDurationDisplay(fresh);
-      }
     };
     return [
       {
@@ -552,11 +542,14 @@ export function createNodeMenu(
         key: "triggerPeriodSnap",
         label: "Snap to selection",
         kind: "button",
-        // Sets the trigger period to exactly one full-length fire's own
-        // rate-adjusted duration -- with duration motion at "fixed" 1.0
-        // (a fire always plays the range's full length), consecutive
+        // Sets the trigger period to exactly the selection's own length at
+        // 1.0x (see selectionDurationSeconds) -- with duration motion
+        // fixed at 1.0 (a fire always plays the range's full length) and
+        // rate motion fixed at 1.0 (no speed change), consecutive
         // triggers then land exactly as the previous fire ends: a clean,
-        // continuous loop with no gap or overlap.
+        // continuous loop with no gap or overlap. Not a guarantee once
+        // either is on curve/wander instead -- a given fire's own actual
+        // duration can then differ from this snapped period.
         onClick: () => {
           const seconds = selectionDurationSeconds(node);
           if (seconds === null) return;
