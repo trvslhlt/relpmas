@@ -316,7 +316,6 @@ export class SampleNodeEngine {
     const now = this.audioContext.currentTime;
     const count =
       node.firingPattern === "single" ? 1 : Math.max(1, node.fireCount);
-    const rate = 2 ** (node.rateSemitones / 12);
 
     // Resyncs positionMotion's curve phase to 0 right as this trigger
     // starts -- see NodeRuntime.lastTriggerAt's own doc comment.
@@ -344,17 +343,27 @@ export class SampleNodeEngine {
           : null;
       const range = this.rangeAtTime(node, runtime, fireTime, burstPosition);
       const direction = this.resolveDirection(node, runtime);
+      // Same per-fire evaluation as duration: fixed mode is a constant
+      // multiplier, curve mode sweeps across the burst's own real span
+      // (see perFireValue's own doc comment).
+      const rateMultiplier = this.perFireValue(
+        node.rateMotion,
+        null,
+        burstPosition,
+        1,
+      );
       audio.player.playVoice({
         startFraction: range.start,
         endFraction: range.end,
         direction,
         fadeMs: node.fadeMs,
-        rateSemitones: node.rateSemitones,
+        rateSemitones: 12 * Math.log2(rateMultiplier),
         time: fireTime,
       });
 
       const durationSeconds =
-        (wrappedLength(range.start, range.end) * this.buffer.duration) / rate;
+        (wrappedLength(range.start, range.end) * this.buffer.duration) /
+        rateMultiplier;
       const fireEndTime = fireTime + durationSeconds;
       lastFireEndTime = fireEndTime;
       this.scheduleEvent(id, "fireStart", fireTime - now);
@@ -532,13 +541,24 @@ export class SampleNodeEngine {
     if (!node || !runtime || !audio || !this.buffer) return null;
     const range = runtime.liveRange;
     const direction = this.resolveDirection(node, runtime);
+    const rateMultiplier = this.perFireValue(node.rateMotion, null, null, 1);
     return audio.player.playVoice({
       startFraction: range.start,
       endFraction: range.end,
       direction,
       fadeMs: node.fadeMs,
-      rateSemitones: node.rateSemitones,
+      rateSemitones: 12 * Math.log2(rateMultiplier),
     });
+  }
+
+  /** The rate multiplier a fresh single fire would use right now, with no
+   * burst context -- same fixed/curve-at-0 evaluation fireNow() itself
+   * uses (see perFireValue's own doc comment). Exposed for the node
+   * menu's selection-duration display and "Snap to selection" (see
+   * nodeMenu.ts's selectionDurationSeconds), which need to preview a
+   * representative rate without actually firing anything. */
+  previewRateMultiplier(node: SampleNode): number {
+    return this.perFireValue(node.rateMotion, null, null, 1);
   }
 
   private resolveDirection(
@@ -569,7 +589,7 @@ export class SampleNodeEngine {
    *
    * `burstPosition` (0..1, or null) is trigger()'s own precomputed
    * "how far through this curveSpaced burst is this fire" -- fed to
-   * durationValue, see its own doc comment for what it does with it. */
+   * perFireValue, see its own doc comment for what it does with it. */
   private rangeAtTime(
     node: SampleNode,
     runtime: NodeRuntime,
@@ -589,7 +609,7 @@ export class SampleNodeEngine {
       node.triggerPeriodSeconds,
       0,
     );
-    const localDuration = this.durationValue(
+    const localDuration = this.perFireValue(
       node.durationMotion,
       runtime.durationWander,
       burstPosition,
@@ -639,7 +659,7 @@ export class SampleNodeEngine {
    * firing pattern, since it also drives the always-visible live overlay
    * (tick()'s own call passes elapsed relative to whatever the last
    * trigger was, even if that was a while ago -- the curve just keeps
-   * looping). See durationValue for why duration needs a genuinely
+   * looping). See perFireValue for why duration/rate need a genuinely
    * different evaluation, not just this same function reused. */
   private motionValue(
     config: MotionConfig,
@@ -674,20 +694,25 @@ export class SampleNodeEngine {
     return curveValue ?? wanderValue ?? fallback;
   }
 
-  /** Duration motion only. Unlike position, duration's curve component has
-   * no meaningful elapsed-time axis to sample against: a single fire is
-   * instantaneous relative to its own trigger (see trigger()'s own doc
-   * comment), so there's nothing for triggerPeriodSeconds to measure
-   * elapsed time against for duration specifically the way motionValue
-   * uses it for position. When burstPosition is available (a curveSpaced
-   * fire), the curve is sampled directly at
-   * that position, sweeping once across the burst. Without one (a single
-   * fire), it's sampled at its own start (0) -- a deterministic, boring
-   * fallback by design: "fixed" mode is the intended way to get a
-   * specific constant duration on a single fire. Wander is unaffected --
-   * it already has its own independent time-driven mechanism
-   * (wanderSpeed), continuous regardless of firing pattern. */
-  private durationValue(
+  /** Shared by durationMotion and rateMotion: both resolve to a single
+   * value computed once per fire (never continuously modulated during a
+   * fire's own playback), unlike position which is live at arbitrary
+   * times regardless of firing (see motionValue's own doc comment). A
+   * single fire is instantaneous relative to its own trigger (see
+   * trigger()'s own doc comment), so there's nothing for
+   * triggerPeriodSeconds to measure elapsed time against here the way
+   * motionValue uses it for position. When burstPosition is available (a
+   * curveSpaced fire), the curve is sampled directly at that position,
+   * sweeping once across the burst. Without one (a single fire, or
+   * fireNow()'s immediate one-off), it's sampled at its own start (0) --
+   * a deterministic, boring fallback by design: "fixed" mode is the
+   * intended way to get a specific constant value on a single fire.
+   * Wander is unaffected -- it already has its own independent
+   * time-driven mechanism (wanderSpeed), continuous regardless of firing
+   * pattern (rateMotion never actually reaches wander/both in practice --
+   * the node menu's Rate section only offers fixed/curve -- but this
+   * stays generic rather than special-casing that). */
+  private perFireValue(
     config: MotionConfig,
     wander: WanderState | null,
     burstPosition: number | null,

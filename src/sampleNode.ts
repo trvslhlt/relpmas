@@ -102,6 +102,23 @@ function ascendingCurve(): AutomationPoint[] {
   ];
 }
 
+/** Default rateMotion: fixed at 1.0 (normal speed/pitch, tape-style --
+ * shifts together), in a plausible [0.1, 5] multiplier range for when
+ * curve mode is switched on -- unlike positionMotion/durationMotion,
+ * "none" isn't a meaningful mode here (there's no separate not-moving
+ * fallback distinct from "fixed at 1.0"), so this starts in "fixed"
+ * rather than createMotionConfig's own "none" default. */
+function createRateMotion(): MotionConfig {
+  return {
+    mode: "fixed",
+    fixedValue: 1,
+    curvePoints: ascendingCurve(),
+    wanderSpeed: 0.5,
+    min: 0.1,
+    max: 5,
+  };
+}
+
 /** A sample node's authored, static configuration -- its live state (which
  * way `alternating` fires next, its current moved range, in-flight
  * timers, armed/disarmed) lives in SampleNodeEngine, keyed by id, not
@@ -117,8 +134,13 @@ export interface SampleNode {
    * its start (see wrappedLength). */
   range: WaveformRange;
   direction: Direction;
-  /** Tape-style: shifts pitch and speed together. */
-  rateSemitones: number;
+  /** Tape-style playback rate multiplier (1.0 = normal; shifts pitch and
+   * speed together) -- "fixed" mode is a constant multiplier; "curve"
+   * mode is evaluated once per fire, same as durationMotion (see
+   * SampleNodeEngine.perFireValue's own doc comment): swept across a
+   * curveSpaced burst's own real span, or sampled at the curve's own
+   * start for a single fire. */
+  rateMotion: MotionConfig;
   /** Declick fade in/out applied at every fire's own start/end. */
   fadeMs: number;
 
@@ -244,7 +266,7 @@ export function createSampleNode(color: string): SampleNode {
     color,
     range: { start: 0.1, end: 0.5 },
     direction: "forward",
-    rateSemitones: 0,
+    rateMotion: createRateMotion(),
     fadeMs: 4,
 
     armMode: "manual",

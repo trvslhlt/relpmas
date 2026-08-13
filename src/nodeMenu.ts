@@ -148,6 +148,7 @@ export function createNodeMenu(
 
   const generalSection = createSection("General");
   const playbackSection = createSection("Playback");
+  const rateSection = createSection("Rate");
   const durationSection = createSection("Duration");
   const firingSection = createSection("Firing pattern");
   const positionMotionSection = createSection("Position motion");
@@ -161,6 +162,7 @@ export function createNodeMenu(
     selectionDurationEl,
     generalSection.details,
     playbackSection.details,
+    rateSection.details,
     durationSection.details,
     firingSection.details,
     positionMotionSection.details,
@@ -191,13 +193,15 @@ export function createNodeMenu(
 
   /** How long a fire of this node's *current* range actually plays, at its
    * current rate -- the same `wrappedLength(...) * buffer.duration / rate`
-   * formula SampleNodeEngine.trigger() itself uses, so "Snap to selection"
-   * (below) sets triggerPeriodSeconds to exactly what one full-length fire
-   * takes. null before a sample is loaded. */
+   * formula SampleNodeEngine.trigger() itself uses (rate via
+   * previewRateMultiplier, since rateMotion's curve mode is evaluated per
+   * fire, not read directly off the node), so "Snap to selection" (below)
+   * sets triggerPeriodSeconds to exactly what one full-length fire takes.
+   * null before a sample is loaded. */
   function selectionDurationSeconds(node: SampleNode): number | null {
     const buffer = engine.getBuffer();
     if (!buffer) return null;
-    const rate = 2 ** (node.rateSemitones / 12);
+    const rate = engine.previewRateMultiplier(node);
     return (
       (wrappedLength(node.range.start, node.range.end) * buffer.duration) / rate
     );
@@ -211,9 +215,33 @@ export function createNodeMenu(
 
   function motionFields(
     node: SampleNode,
-    key: "positionMotion" | "durationMotion",
+    key: "positionMotion" | "durationMotion" | "rateMotion",
     labelPrefix: string,
+    options: {
+      /** Restricts the mode <select>'s own options -- rateMotion only
+       * offers fixed/curve (see MotionConfig's own doc comment: there's
+       * no meaningful "none"/wander/both for a per-fire rate multiplier
+       * the way there is for position/duration). Defaults to all five. */
+      modes?: MotionConfig["mode"][];
+      /** UI slider bounds for fixedValue/min/max -- position/duration
+       * work in [0,1] range-local fractions, but rateMotion is a
+       * multiplier (0.1..5 by default, see createRateMotion). */
+      valueMin?: number;
+      valueMax?: number;
+      valueStep?: number;
+      /** Omits the wander speed field entirely when the mode select
+       * doesn't offer wander/both (rateMotion) -- showing a control that
+       * can never take effect would just be confusing clutter. */
+      showWanderSpeed?: boolean;
+    } = {},
   ): Field[] {
+    const {
+      modes = ["none", "fixed", "curve", "wander", "both"],
+      valueMin = 0,
+      valueMax = 1,
+      valueStep = 0.01,
+      showWanderSpeed = true,
+    } = options;
     const config = node[key];
     // Reads the freshest config at call time, not the `config` captured
     // above -- these fields' onChange handlers all survive from the last
@@ -226,6 +254,13 @@ export function createNodeMenu(
     const updateMotion = (patch: Partial<MotionConfig>) => {
       const current = engine.getNode(node.id)?.[key] ?? config;
       update({ [key]: { ...current, ...patch } });
+      // rateMotion is the only one of the three that feeds into the
+      // selection-duration display/snap (see selectionDurationSeconds) --
+      // position/duration motion don't affect it.
+      if (key === "rateMotion") {
+        const fresh = engine.getNode(node.id);
+        if (fresh) updateSelectionDurationDisplay(fresh);
+      }
     };
     return [
       {
@@ -233,7 +268,7 @@ export function createNodeMenu(
         label: `${labelPrefix} motion`,
         kind: "select",
         value: config.mode,
-        options: ["none", "fixed", "curve", "wander", "both"],
+        options: modes,
         onChange: (value) =>
           updateMotion({ mode: value as MotionConfig["mode"] }),
       },
@@ -242,9 +277,9 @@ export function createNodeMenu(
         label: `${labelPrefix} fixed value`,
         kind: "range",
         value: config.fixedValue,
-        min: 0,
-        max: 1,
-        step: 0.01,
+        min: valueMin,
+        max: valueMax,
+        step: valueStep,
         indented: true,
         onChange: (value) => updateMotion({ fixedValue: value }),
       },
@@ -253,9 +288,9 @@ export function createNodeMenu(
         label: `${labelPrefix} min`,
         kind: "range",
         value: config.min,
-        min: 0,
-        max: 1,
-        step: 0.01,
+        min: valueMin,
+        max: valueMax,
+        step: valueStep,
         indented: true,
         onChange: (value) => updateMotion({ min: value }),
       },
@@ -264,23 +299,27 @@ export function createNodeMenu(
         label: `${labelPrefix} max`,
         kind: "range",
         value: config.max,
-        min: 0,
-        max: 1,
-        step: 0.01,
+        min: valueMin,
+        max: valueMax,
+        step: valueStep,
         indented: true,
         onChange: (value) => updateMotion({ max: value }),
       },
-      {
-        key: `${key}-wanderSpeed`,
-        label: `${labelPrefix} wander speed`,
-        kind: "range",
-        value: config.wanderSpeed,
-        min: 0,
-        max: 1,
-        step: 0.01,
-        indented: true,
-        onChange: (value) => updateMotion({ wanderSpeed: value }),
-      },
+      ...(showWanderSpeed
+        ? [
+            {
+              key: `${key}-wanderSpeed`,
+              label: `${labelPrefix} wander speed`,
+              kind: "range" as const,
+              value: config.wanderSpeed,
+              min: 0,
+              max: 1,
+              step: 0.01,
+              indented: true,
+              onChange: (value: number) => updateMotion({ wanderSpeed: value }),
+            },
+          ]
+        : []),
       {
         key: `${key}-curve`,
         label: `${labelPrefix} curve`,
@@ -540,19 +579,6 @@ export function createNodeMenu(
           update({ direction: value as SampleNode["direction"] }),
       },
       {
-        key: "rateSemitones",
-        label: "Rate (semitones)",
-        kind: "range",
-        value: node.rateSemitones,
-        min: -24,
-        max: 24,
-        step: 1,
-        onChange: (value) => {
-          update({ rateSemitones: value });
-          updateSelectionDurationDisplay(node);
-        },
-      },
-      {
         key: "fadeMs",
         label: "Declick fade (ms)",
         kind: "range",
@@ -660,6 +686,16 @@ export function createNodeMenu(
 
     renderFields(generalSection.body, generalFields(node));
     renderFields(playbackSection.body, playbackFields(node));
+    renderFields(
+      rateSection.body,
+      motionFields(node, "rateMotion", "Rate", {
+        modes: ["fixed", "curve"],
+        valueMin: 0.1,
+        valueMax: 5,
+        valueStep: 0.01,
+        showWanderSpeed: false,
+      }),
+    );
     renderFields(
       durationSection.body,
       motionFields(node, "durationMotion", "Duration"),
