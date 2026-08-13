@@ -53,6 +53,12 @@ interface WanderState {
 interface NodeRuntime {
   armed: boolean;
   nextTriggerAt: number | null;
+  /** Set at the top of every trigger() call (manual, loop, or
+   * graph-cascaded alike) -- positionMotion's curve mode measures elapsed
+   * time from this, not the raw audio clock, so it restarts at curve
+   * position 0 on every trigger instead of free-running independently of
+   * the node's own firing (see motionValue's own doc comment). */
+  lastTriggerAt: number;
   nextAlternatingDirection: "forward" | "backward";
   positionWander: WanderState | null;
   durationWander: WanderState | null;
@@ -180,6 +186,7 @@ export class SampleNodeEngine {
     this.runtime.set(node.id, {
       armed: false,
       nextTriggerAt: null,
+      lastTriggerAt: this.audioContext.currentTime,
       nextAlternatingDirection: "forward",
       positionWander: null,
       durationWander: null,
@@ -311,6 +318,10 @@ export class SampleNodeEngine {
       node.firingPattern === "single" ? 1 : Math.max(1, node.fireCount);
     const rate = 2 ** (node.rateSemitones / 12);
 
+    // Resyncs positionMotion's curve phase to 0 right as this trigger
+    // starts -- see NodeRuntime.lastTriggerAt's own doc comment.
+    runtime.lastTriggerAt = now;
+
     this.emitEvent(id, "triggerStart");
 
     const fireTimes = [now];
@@ -437,7 +448,7 @@ export class SampleNodeEngine {
       audio.modulator.rateParam,
       route.curvePoints,
       this.audioContext,
-      route.durationSeconds,
+      node.triggerPeriodSeconds,
       { min: route.valueMin, max: route.valueMax },
       atTime,
     );
@@ -445,7 +456,7 @@ export class SampleNodeEngine {
       audio.modulator.depthParam,
       route.depthCurvePoints,
       this.audioContext,
-      route.durationSeconds,
+      node.triggerPeriodSeconds,
       { min: route.depthMin, max: route.depthMax },
       atTime,
     );
@@ -574,7 +585,8 @@ export class SampleNodeEngine {
     const localStart = this.motionValue(
       node.positionMotion,
       runtime.positionWander,
-      atTime,
+      atTime - runtime.lastTriggerAt,
+      node.triggerPeriodSeconds,
       0,
     );
     const localDuration = this.durationValue(
@@ -615,16 +627,25 @@ export class SampleNodeEngine {
     return { start, end };
   }
 
-  /** Position motion only -- continuous, evaluated against the audio
-   * clock regardless of firing pattern, since it also drives the
-   * always-visible live overlay (tick()'s own call has no trigger to be
-   * relative to in the first place). See durationValue for why duration
-   * needs a genuinely different evaluation, not just this same function
-   * reused. */
+  /** Position motion only -- trigger-relative: curve mode measures
+   * `elapsedSinceTrigger` (atTime - runtime.lastTriggerAt, set fresh at
+   * the top of every trigger()) looped over `periodSeconds`
+   * (node.triggerPeriodSeconds), so the curve restarts at position 0 on
+   * every trigger and completes exactly as the next one is due -- same
+   * trigger-relative timing sweepRoute/lfoRoute already use for their own
+   * ramps (see MotionConfig's own doc comment), rather than free-running
+   * on the audio clock independently of the node's actual firing. Still
+   * evaluated for arbitrary (possibly future) `atTime` regardless of
+   * firing pattern, since it also drives the always-visible live overlay
+   * (tick()'s own call passes elapsed relative to whatever the last
+   * trigger was, even if that was a while ago -- the curve just keeps
+   * looping). See durationValue for why duration needs a genuinely
+   * different evaluation, not just this same function reused. */
   private motionValue(
     config: MotionConfig,
     wander: WanderState | null,
-    atTime: number,
+    elapsedSinceTrigger: number,
+    periodSeconds: number,
     fallback: number,
   ): number {
     if (config.mode === "none") return fallback;
@@ -634,8 +655,8 @@ export class SampleNodeEngine {
       config.mode === "curve" || config.mode === "both"
         ? curvePositionAtElapsed(
             config.curvePoints,
-            atTime,
-            config.curveDurationSeconds,
+            elapsedSinceTrigger,
+            periodSeconds,
             range,
           )
         : null;
@@ -654,13 +675,12 @@ export class SampleNodeEngine {
   }
 
   /** Duration motion only. Unlike position, duration's curve component has
-   * no meaningful continuous-clock axis to sample: a single fire is
+   * no meaningful elapsed-time axis to sample against: a single fire is
    * instantaneous relative to its own trigger (see trigger()'s own doc
-   * comment), so there's nothing coherent for curveDurationSeconds to
-   * measure elapsed time against for duration specifically -- ignored
-   * here entirely (config.curveDurationSeconds is a MotionConfig field
-   * shared with position, which still uses it). When burstPosition is
-   * available (a curveSpaced fire), the curve is sampled directly at
+   * comment), so there's nothing for triggerPeriodSeconds to measure
+   * elapsed time against for duration specifically the way motionValue
+   * uses it for position. When burstPosition is available (a curveSpaced
+   * fire), the curve is sampled directly at
    * that position, sweeping once across the burst. Without one (a single
    * fire), it's sampled at its own start (0) -- a deterministic, boring
    * fallback by design: "fixed" mode is the intended way to get a

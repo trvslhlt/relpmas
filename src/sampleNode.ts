@@ -48,20 +48,23 @@ export type MotionMode = "none" | "fixed" | "curve" | "wander" | "both";
  * (whose fallback is baked into the caller -- range start for position,
  * full range length for duration) this is user-set and can be any value
  * in between, e.g. "always exactly 35% of the range's length" rather than
- * always 0% or always 100%. `curvePoints`/`curveDurationSeconds` apply
- * when mode is "curve" or "both": elapsed time, looped over
- * curveDurationSeconds, maps through the curve into [min, max].
- * `wanderSpeed` applies when mode is "wander" or "both": bruit-kit's
- * driftMath retarget-then-glide random walk, also remapped into
- * [min, max]. "both" sums the two contributions (each still independently
- * within [min,max] before summing, so the combined result can exceed
- * either alone -- deliberately, more range of motion is the point of
- * layering both). */
+ * always 0% or always 100%. `curvePoints` applies when mode is "curve" or
+ * "both": time elapsed since the node's own *last trigger*, looped over
+ * triggerPeriodSeconds, maps through the curve into [min, max] -- restarts
+ * at curve position 0 on every trigger (manual, loop, or graph-cascaded
+ * alike), same trigger-relative timing sweepRoute/lfoRoute already use for
+ * their own ramps, rather than an independent duration that could drift
+ * out of sync with the node's actual firing (see
+ * SampleNodeEngine.motionValue). `wanderSpeed` applies when mode is
+ * "wander" or "both": bruit-kit's driftMath retarget-then-glide random
+ * walk, also remapped into [min, max]. "both" sums the two contributions
+ * (each still independently within [min,max] before summing, so the
+ * combined result can exceed either alone -- deliberately, more range of
+ * motion is the point of layering both). */
 export interface MotionConfig {
   mode: MotionMode;
   fixedValue: number;
   curvePoints: AutomationPoint[];
-  curveDurationSeconds: number;
   wanderSpeed: number;
   min: number;
   max: number;
@@ -82,7 +85,6 @@ export function createMotionConfig(
     mode: "none",
     fixedValue,
     curvePoints,
-    curveDurationSeconds: 4,
     wanderSpeed: 0.5,
     min,
     max,
@@ -196,13 +198,14 @@ export function createSweepRoute(): SweepRoute {
  * createTriggerableModulator continuously modulates it, and the curve
  * ramps the *modulator's own rate* instead (depthCurvePoints ramps its
  * depth the same way) -- see SampleNodeEngine.trigger()/
- * setNodeLfoRoute. */
+ * setNodeLfoRoute. No separate duration field, same reasoning as
+ * SweepRoute's own doc comment: both ramps always span the node's own
+ * triggerPeriodSeconds rather than an independently tunable number. */
 export interface LfoRoute {
   enabled: boolean;
   targetEffectIndex: number;
   targetParamKey: string;
   curvePoints: AutomationPoint[];
-  durationSeconds: number;
   valueMin: number;
   valueMax: number;
   depthCurvePoints: AutomationPoint[];
@@ -219,7 +222,6 @@ export function createLfoRoute(): LfoRoute {
       { position: 0, value: 0 },
       { position: 1, value: 1 },
     ],
-    durationSeconds: 1,
     valueMin: 1,
     valueMax: 20,
     depthCurvePoints: [
