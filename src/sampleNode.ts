@@ -178,7 +178,7 @@ function ascendingCurve(): AutomationPoint[] {
 }
 
 /** Default rateMotion: fixed at 1.0 (normal speed/pitch, tape-style --
- * shifts together), in a plausible [0.1, 5] multiplier range for when a
+ * shifts together), in a plausible [0.5, 2.0] multiplier range for when a
  * curve toggle is switched on -- unlike positionMotion/durationMotion,
  * "nothing enabled" isn't a meaningful default here (there's no separate
  * not-moving fallback distinct from "fixed at 1.0"), so this starts with
@@ -202,8 +202,8 @@ function createRateMotion(): MotionConfig {
     continuousLoopSeconds: 4,
     useWander: false,
     wanderSpeed: 0.5,
-    min: 0.1,
-    max: 5,
+    min: 0.5,
+    max: 2.0,
   };
 }
 

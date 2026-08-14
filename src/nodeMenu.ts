@@ -413,12 +413,22 @@ export function createNodeMenu(
     key: "positionMotion" | "durationMotion" | "rateMotion",
     labelPrefix: string,
     options: {
-      /** UI slider bounds for fixedValue/min/max -- position/duration
-       * work in [0,1] range-local fractions, but rateMotion is a
-       * multiplier (0.1..5 by default, see createRateMotion). */
+      /** UI slider bounds for min/max (and fixedValue, unless
+       * fixedValueMin/fixedValueMax below override it) -- position/
+       * duration work in [0,1] range-local fractions, but rateMotion is a
+       * wider multiplier range (see createRateMotion) than its own
+       * fixedValue slider needs (see fixedValueMin/fixedValueMax). */
       valueMin?: number;
       valueMax?: number;
       valueStep?: number;
+      /** Narrower bounds for just the fixedValue slider, when the
+       * "typical, sane" range for a constant value is tighter than
+       * min/max's own excursion range -- rateMotion's own case (fixed
+       * 0.5..2.0, a modest speed range, vs. min/max's wider 0.1..5 for
+       * more extreme curve/wander excursions). Defaults to valueMin/
+       * valueMax when omitted, same as before this split existed. */
+      fixedValueMin?: number;
+      fixedValueMax?: number;
       /** Hides the "per fire" checkbox -- rateMotion's own case: for a
        * single fire (the common/default firing pattern), fireEnabled has
        * no burst to sample a position from and always freezes at the
@@ -438,6 +448,8 @@ export function createNodeMenu(
       valueMin = 0,
       valueMax = 1,
       valueStep = 0.01,
+      fixedValueMin = valueMin,
+      fixedValueMax = valueMax,
       showFireOption = true,
     } = options;
     const config = node[key];
@@ -483,8 +495,8 @@ export function createNodeMenu(
               label: `${labelPrefix} fixed value`,
               kind: "range" as const,
               value: config.fixedValue,
-              min: valueMin,
-              max: valueMax,
+              min: fixedValueMin,
+              max: fixedValueMax,
               step: valueStep,
               indented: true,
               onChange: (value: number) => updateMotion({ fixedValue: value }),
@@ -954,6 +966,8 @@ export function createNodeMenu(
         valueMin: 0.1,
         valueMax: 5,
         valueStep: 0.01,
+        fixedValueMin: 0.5,
+        fixedValueMax: 2.0,
         showFireOption: false,
       }),
     );
