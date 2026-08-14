@@ -54,14 +54,24 @@ interface NodeRuntime {
   armed: boolean;
   nextTriggerAt: number | null;
   /** Set at the top of every trigger() call (manual, loop, or
-   * graph-cascaded alike) -- positionMotion's curve mode measures elapsed
-   * time from this, not the raw audio clock, so it restarts at curve
-   * position 0 on every trigger instead of free-running independently of
-   * the node's own firing (see motionValue's own doc comment). */
+   * graph-cascaded alike) -- any MotionConfig's duringTriggerEnabled
+   * toggle measures elapsed time from this, not the raw audio clock, so
+   * it restarts at curve position 0 on every trigger instead of
+   * free-running independently of the node's own firing (see
+   * evaluateMotion's own doc comment). */
   lastTriggerAt: number;
+  /** How many triggers this node has had so far -- read (as "the index
+   * to use right now") then incremented at the top of every trigger()
+   * call, for acrossTriggersEnabled's own curve sampling. Unlike
+   * lastTriggerAt (elapsed *time*), this advances by exactly 1 per
+   * trigger event regardless of how much real time separates them --
+   * see MotionConfig's own doc comment on why that distinction matters
+   * for something evaluated once per fire. */
+  triggerIndex: number;
   nextAlternatingDirection: "forward" | "backward";
   positionWander: WanderState | null;
   durationWander: WanderState | null;
+  rateWander: WanderState | null;
   liveRange: WaveformRange;
 }
 
@@ -187,9 +197,11 @@ export class SampleNodeEngine {
       armed: false,
       nextTriggerAt: null,
       lastTriggerAt: this.audioContext.currentTime,
+      triggerIndex: 0,
       nextAlternatingDirection: "forward",
       positionWander: null,
       durationWander: null,
+      rateWander: null,
       liveRange: { ...node.range },
     });
 
@@ -300,13 +312,15 @@ export class SampleNodeEngine {
    *
    * Every fire's own time is computed in a first pass (gaps depend only
    * on intervalCurve/fireCount, never on duration) before any of them
-   * actually fire, so a curveSpaced burst's duration curve can be swept
-   * across the burst's own real span -- first fire = curve start, last
-   * fire = curve end -- rather than sampled off the continuous audio
-   * clock the way it still is for "single" (see rangeAtTime's own doc
-   * comment on why a single fire can't be burst-relative the same way:
-   * with only one fire, "elapsed since trigger start" is always exactly
-   * 0, which would freeze the curve at its own start value forever). */
+   * actually fire, so a fireEnabled curve can be swept across the burst's
+   * own real span -- first fire = curve position 0, last fire = curve
+   * position 1 -- rather than sampled off the continuous audio clock the
+   * way a duringTriggerEnabled curve is (see evaluateMotion's own doc
+   * comment): with only one fire, "position within this burst" is always
+   * exactly 0, which is why fireEnabled (or duringTriggerEnabled) alone
+   * freezes a single-fire node's value at the curve's own start --
+   * acrossTriggersEnabled (or continuousEnabled) is the way to get real
+   * movement out of a single-fire node instead. */
   trigger(id: string): void {
     const node = this.nodes.get(id);
     const runtime = this.runtime.get(id);
@@ -320,6 +334,11 @@ export class SampleNodeEngine {
     // Resyncs positionMotion's curve phase to 0 right as this trigger
     // starts -- see NodeRuntime.lastTriggerAt's own doc comment.
     runtime.lastTriggerAt = now;
+    // The index this trigger's own fires use for acrossTriggersEnabled,
+    // captured before bumping it for the *next* trigger -- see
+    // NodeRuntime.triggerIndex's own doc comment.
+    const triggerIndex = runtime.triggerIndex;
+    runtime.triggerIndex += 1;
 
     this.emitEvent(id, "triggerStart");
 
@@ -341,15 +360,22 @@ export class SampleNodeEngine {
         node.firingPattern === "curveSpaced" && burstSpan > 0
           ? (fireTime - now) / burstSpan
           : null;
-      const range = this.rangeAtTime(node, runtime, fireTime, burstPosition);
-      const direction = this.resolveDirection(node, runtime);
-      // Same per-fire evaluation as duration: fixed mode is a constant
-      // multiplier, curve mode sweeps across the burst's own real span
-      // (see perFireValue's own doc comment).
-      const rateMultiplier = this.perFireValue(
-        node.rateMotion,
-        null,
+      const range = this.rangeAtTime(
+        node,
+        runtime,
+        fireTime,
         burstPosition,
+        triggerIndex,
+      );
+      const direction = this.resolveDirection(node, runtime);
+      const rateMultiplier = this.evaluateMotion(
+        node.rateMotion,
+        runtime.rateWander,
+        fireTime,
+        runtime.lastTriggerAt,
+        node.triggerPeriodSeconds,
+        burstPosition,
+        triggerIndex,
         1,
       );
       audio.player.playVoice({
@@ -541,7 +567,16 @@ export class SampleNodeEngine {
     if (!node || !runtime || !audio || !this.buffer) return null;
     const range = runtime.liveRange;
     const direction = this.resolveDirection(node, runtime);
-    const rateMultiplier = this.perFireValue(node.rateMotion, null, null, 1);
+    const rateMultiplier = this.evaluateMotion(
+      node.rateMotion,
+      runtime.rateWander,
+      this.audioContext.currentTime,
+      runtime.lastTriggerAt,
+      node.triggerPeriodSeconds,
+      null,
+      runtime.triggerIndex,
+      1,
+    );
     return audio.player.playVoice({
       startFraction: range.start,
       endFraction: range.end,
@@ -579,41 +614,55 @@ export class SampleNodeEngine {
    *
    * `burstPosition` (0..1, or null) is trigger()'s own precomputed
    * "how far through this curveSpaced burst is this fire" -- fed to
-   * perFireValue, see its own doc comment for what it does with it. */
+   * evaluateMotion's fireEnabled contribution. `triggerIndex` defaults to
+   * the runtime's own current value (tick()'s continuous live-overlay
+   * evaluation has no specific trigger to pass one from), but trigger()
+   * itself passes its own captured index explicitly so every fire in one
+   * trigger's burst uses the same acrossTriggersEnabled contribution,
+   * even though duringTriggerEnabled/fireEnabled can still differ per
+   * fire. */
   private rangeAtTime(
     node: SampleNode,
     runtime: NodeRuntime,
     atTime: number,
     burstPosition: number | null = null,
+    triggerIndex: number = runtime.triggerIndex,
   ): WaveformRange {
     const rangeStart = node.range.start;
     const rangeLength = wrappedLength(node.range.start, node.range.end);
 
-    // Falls back to "the range's own start, at its full length" for
-    // "none" mode -- the same no-motion behavior as before, just
+    // Falls back to "the range's own start, at its full length" when
+    // nothing is enabled -- the same no-motion behavior as before, just
     // expressed in the range's own local terms instead of absolute ones.
-    const localStart = this.motionValue(
+    const localStart = this.evaluateMotion(
       node.positionMotion,
       runtime.positionWander,
-      atTime - runtime.lastTriggerAt,
+      atTime,
+      runtime.lastTriggerAt,
       node.triggerPeriodSeconds,
+      burstPosition,
+      triggerIndex,
       0,
     );
-    const localDuration = this.perFireValue(
+    const localDuration = this.evaluateMotion(
       node.durationMotion,
       runtime.durationWander,
+      atTime,
+      runtime.lastTriggerAt,
+      node.triggerPeriodSeconds,
       burstPosition,
+      triggerIndex,
       1,
     );
 
     // Floored at 0.01 (not 0) per durationMotion's own contract -- a
     // fire's duration can shrink to a sliver but never fully silence.
-    // Capped at 1 (a full lap of the range, no more) since "both" mode can
-    // sum curve+wander past either alone (see motionValue's own doc) --
-    // unlike the old formula this replaces, there's no precision reason
-    // for the cap anymore, just a semantic one: more than one full lap
-    // wraps back on itself and would just as likely show *less* than a
-    // full range's worth once wrapped, not more.
+    // Capped at 1 (a full lap of the range, no more) since summing several
+    // active contributions can exceed either alone (see evaluateMotion's
+    // own doc) -- unlike the old formula this replaces, there's no
+    // precision reason for the cap anymore, just a semantic one: more than
+    // one full lap wraps back on itself and would just as likely show
+    // *less* than a full range's worth once wrapped, not more.
     const clampedLocalDuration = Math.min(1, Math.max(0.01, localDuration));
 
     // end is computed directly from the *absolute* start plus the local
@@ -637,92 +686,101 @@ export class SampleNodeEngine {
     return { start, end };
   }
 
-  /** Position motion only -- trigger-relative: curve mode measures
-   * `elapsedSinceTrigger` (atTime - runtime.lastTriggerAt, set fresh at
-   * the top of every trigger()) looped over `periodSeconds`
-   * (node.triggerPeriodSeconds), so the curve restarts at position 0 on
-   * every trigger and completes exactly as the next one is due -- same
-   * trigger-relative timing sweepRoute/lfoRoute already use for their own
-   * ramps (see MotionConfig's own doc comment), rather than free-running
-   * on the audio clock independently of the node's actual firing. Still
-   * evaluated for arbitrary (possibly future) `atTime` regardless of
-   * firing pattern, since it also drives the always-visible live overlay
-   * (tick()'s own call passes elapsed relative to whatever the last
-   * trigger was, even if that was a while ago -- the curve just keeps
-   * looping). See perFireValue for why duration/rate need a genuinely
-   * different evaluation, not just this same function reused. */
-  private motionValue(
+  /** Unified evaluator for all three of a node's independently-modulated
+   * live scalars (position, duration, rate) -- see MotionConfig's own doc
+   * comment for the full explanation of the five ways a value can move,
+   * and why enabling more than one sums their contributions rather than
+   * picking just one.
+   *
+   * `useFixed` short-circuits everything below it. Otherwise each enabled
+   * toggle contributes its own sampled value:
+   * - duringTriggerEnabled: curvePositionAtElapsed relative to
+   *   `lastTriggerAt`, looped over `triggerPeriodSeconds` -- restarts at
+   *   curve position 0 on every trigger, same trigger-relative timing
+   *   sweepRoute/lfoRoute already use for their own ramps.
+   * - fireEnabled: sampleCurveAt this fire's own `burstPosition` (0 when
+   *   null -- a single fire, or fireNow()'s immediate one-off) -- baked
+   *   into that one voice at the instant it's computed, never
+   *   re-evaluated during its own playback.
+   * - acrossTriggersEnabled: sampleCurveAt (`triggerIndex` modulo the
+   *   config's own `triggerCycleLength`) / `triggerCycleLength` -- steps
+   *   exactly once per trigger *event*, not per unit of elapsed time, so
+   *   (unlike duringTriggerEnabled/fireEnabled) it actually moves for a
+   *   single-fire node retriggered at any tempo, steady or not.
+   * - continuousEnabled: curvePositionAtElapsed against the raw `atTime`
+   *   (not relative to any trigger), looped over the config's own
+   *   `continuousLoopSeconds` -- entirely independent of triggers or
+   *   fires, never resets.
+   * - useWander: the current wander snapshot (bruit-kit's driftMath
+   *   retarget-then-glide random walk) -- continuous and
+   *   trigger-independent like continuousEnabled, but random instead of a
+   *   drawn shape.
+   *
+   * All active contributions are summed, then recentered by
+   * `(n - 1) * center` (center = the midpoint of [min,max]) so exactly
+   * one contribution reads as itself, two reproduce the old "both"
+   * formula, and so on for any combination -- rangeAtTime clamps the
+   * final composed start/length hard against buffer bounds regardless,
+   * so exceeding [min,max] here from summing several at once is safe.
+   * Zero enabled contributions (and useFixed off) returns `fallback`. */
+  private evaluateMotion(
     config: MotionConfig,
     wander: WanderState | null,
-    elapsedSinceTrigger: number,
-    periodSeconds: number,
-    fallback: number,
-  ): number {
-    if (config.mode === "none") return fallback;
-    if (config.mode === "fixed") return config.fixedValue;
-    const range = { min: config.min, max: config.max };
-    const curveValue =
-      config.mode === "curve" || config.mode === "both"
-        ? curvePositionAtElapsed(
-            config.curvePoints,
-            elapsedSinceTrigger,
-            periodSeconds,
-            range,
-          )
-        : null;
-    const wanderValue =
-      (config.mode === "wander" || config.mode === "both") && wander
-        ? wander.current
-        : null;
-    if (curveValue !== null && wanderValue !== null) {
-      // "both" sums the two contributions deliberately -- see
-      // MotionConfig's own doc comment. rangeAtTime clamps the final
-      // composed start/length hard against buffer bounds regardless, so
-      // exceeding either contribution alone here is safe.
-      return curveValue + wanderValue - (config.min + config.max) / 2;
-    }
-    return curveValue ?? wanderValue ?? fallback;
-  }
-
-  /** Shared by durationMotion and rateMotion: both resolve to a single
-   * value computed once per fire (never continuously modulated during a
-   * fire's own playback), unlike position which is live at arbitrary
-   * times regardless of firing (see motionValue's own doc comment). A
-   * single fire is instantaneous relative to its own trigger (see
-   * trigger()'s own doc comment), so there's nothing for
-   * triggerPeriodSeconds to measure elapsed time against here the way
-   * motionValue uses it for position. When burstPosition is available (a
-   * curveSpaced fire), the curve is sampled directly at that position,
-   * sweeping once across the burst. Without one (a single fire, or
-   * fireNow()'s immediate one-off), it's sampled at its own start (0) --
-   * a deterministic, boring fallback by design: "fixed" mode is the
-   * intended way to get a specific constant value on a single fire.
-   * Wander is unaffected -- it already has its own independent
-   * time-driven mechanism (wanderSpeed), continuous regardless of firing
-   * pattern (rateMotion never actually reaches wander/both in practice --
-   * the node menu's Rate section only offers fixed/curve -- but this
-   * stays generic rather than special-casing that). */
-  private perFireValue(
-    config: MotionConfig,
-    wander: WanderState | null,
+    atTime: number,
+    lastTriggerAt: number,
+    triggerPeriodSeconds: number,
     burstPosition: number | null,
+    triggerIndex: number,
     fallback: number,
   ): number {
-    if (config.mode === "none") return fallback;
-    if (config.mode === "fixed") return config.fixedValue;
+    if (config.useFixed) return config.fixedValue;
+
     const range = { min: config.min, max: config.max };
-    const curveValue =
-      config.mode === "curve" || config.mode === "both"
-        ? sampleCurveAt(config.curvePoints, burstPosition ?? 0, range)
-        : null;
-    const wanderValue =
-      (config.mode === "wander" || config.mode === "both") && wander
-        ? wander.current
-        : null;
-    if (curveValue !== null && wanderValue !== null) {
-      return curveValue + wanderValue - (config.min + config.max) / 2;
+    const contributions: number[] = [];
+
+    if (config.duringTriggerEnabled) {
+      contributions.push(
+        curvePositionAtElapsed(
+          config.curvePoints,
+          atTime - lastTriggerAt,
+          triggerPeriodSeconds,
+          range,
+        ),
+      );
     }
-    return curveValue ?? wanderValue ?? fallback;
+    if (config.fireEnabled) {
+      contributions.push(
+        sampleCurveAt(config.curvePoints, burstPosition ?? 0, range),
+      );
+    }
+    if (config.acrossTriggersEnabled) {
+      const cycleLength = Math.max(1, Math.round(config.triggerCycleLength));
+      contributions.push(
+        sampleCurveAt(
+          config.curvePoints,
+          (triggerIndex % cycleLength) / cycleLength,
+          range,
+        ),
+      );
+    }
+    if (config.continuousEnabled) {
+      contributions.push(
+        curvePositionAtElapsed(
+          config.curvePoints,
+          atTime,
+          config.continuousLoopSeconds,
+          range,
+        ),
+      );
+    }
+    if (config.useWander && wander) {
+      contributions.push(wander.current);
+    }
+
+    if (contributions.length === 0) return fallback;
+    const center = (config.min + config.max) / 2;
+    const sum = contributions.reduce((a, b) => a + b, 0);
+    return sum - (contributions.length - 1) * center;
   }
 
   /** Advances every armed node's range motion and due loop triggers.
@@ -737,6 +795,7 @@ export class SampleNodeEngine {
 
       this.advanceWander(node.positionMotion, "positionWander", runtime);
       this.advanceWander(node.durationMotion, "durationWander", runtime);
+      this.advanceWander(node.rateMotion, "rateWander", runtime);
 
       const nextRange = this.rangeAtTime(node, runtime, now);
       if (
@@ -761,10 +820,10 @@ export class SampleNodeEngine {
 
   private advanceWander(
     config: MotionConfig,
-    key: "positionWander" | "durationWander",
+    key: "positionWander" | "durationWander" | "rateWander",
     runtime: NodeRuntime,
   ): void {
-    if (config.mode !== "wander" && config.mode !== "both") {
+    if (!config.useWander) {
       runtime[key] = null;
       return;
     }

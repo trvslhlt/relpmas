@@ -34,38 +34,88 @@ export type ArmMode = "manual" | "loop";
  * produces `fireCount` fires, gapped according to `intervalCurve`. */
 export type FiringPattern = "single" | "curveSpaced";
 
-export type MotionMode = "none" | "fixed" | "curve" | "wander" | "both";
-
-/** Config for one of a node's two independently-modulated live scalars
- * (position or duration -- see SampleNode.positionMotion/durationMotion).
- * `min`/`max` are
- * fractions local to the node's own selected range (SampleNode.range),
- * not the whole buffer -- the range is the candidate playback area, and
+/** Config for one of a node's three independently-modulated live scalars
+ * (position, duration, or rate -- see SampleNode.positionMotion/
+ * durationMotion/rateMotion). `min`/`max` are fractions local to the
+ * node's own selected range (SampleNode.range) for position/duration, or
+ * a plain multiplier range for rate -- see each field's own doc comment.
+ * The range is the candidate playback area for position/duration, and
  * motion only ever moves within it (see SampleNodeEngine.rangeAtTime).
- * For position, 0 = the range's own start, 1 = its own end. For duration,
- * 0 = (clamped to) a sliver, 1 = the range's own full length. `fixedValue`
- * applies when mode is "fixed": a constant local value, unlike "none"
- * (whose fallback is baked into the caller -- range start for position,
- * full range length for duration) this is user-set and can be any value
- * in between, e.g. "always exactly 35% of the range's length" rather than
- * always 0% or always 100%. `curvePoints` applies when mode is "curve" or
- * "both": time elapsed since the node's own *last trigger*, looped over
- * triggerPeriodSeconds, maps through the curve into [min, max] -- restarts
- * at curve position 0 on every trigger (manual, loop, or graph-cascaded
- * alike), same trigger-relative timing sweepRoute/lfoRoute already use for
- * their own ramps, rather than an independent duration that could drift
- * out of sync with the node's actual firing (see
- * SampleNodeEngine.motionValue). `wanderSpeed` applies when mode is
- * "wander" or "both": bruit-kit's driftMath retarget-then-glide random
- * walk, also remapped into [min, max]. "both" sums the two contributions
- * (each still independently within [min,max] before summing, so the
- * combined result can exceed either alone -- deliberately, more range of
- * motion is the point of layering both). */
+ *
+ * `useFixed` is exclusive: when true, the result is always exactly
+ * `fixedValue`, ignoring every other field below -- a constant has
+ * nothing meaningful to combine with a sweep. When false, every other
+ * enabled toggle contributes and their values sum (see
+ * SampleNodeEngine.evaluateMotion) -- "more range of motion is the point
+ * of layering," the same principle a single "both" mode used to express
+ * for exactly two contributions (curve + wander), now generalized to any
+ * combination. Named around this project's own arm -> trigger -> fire
+ * vocabulary (see the PLAN's "Core model"): a trigger starts a node's
+ * cycle, a fire is one actual sample playback within it.
+ *
+ * - `duringTriggerEnabled`: samples `curvePoints` at (time elapsed since
+ *   the node's own *last trigger*) / triggerPeriodSeconds -- restarts at
+ *   curve position 0 on every trigger (manual, loop, or graph-cascaded
+ *   alike) and completes exactly as the next one is due, same
+ *   trigger-relative timing sweepRoute/lfoRoute's own ramps use. For
+ *   something evaluated only once per fire (rate, duration), this is
+ *   only actually visible across a curveSpaced burst spread out over
+ *   real time -- a single fire happens at essentially the trigger's own
+ *   start, so elapsed time there is always ~0 (see fireEnabled below and
+ *   acrossTriggersEnabled for the two ways to get real movement out of a
+ *   single-fire node instead).
+ * - `fireEnabled`: samples `curvePoints` at this specific fire's own
+ *   position within the current firing burst (0 for a single fire, or
+ *   the first of a curveSpaced burst; 1 for the burst's last fire) --
+ *   baked into that one voice at the instant it fires, never
+ *   re-evaluated during its own playback. Same "always ~0 for a single
+ *   fire" caveat as duringTriggerEnabled, for the same reason (a single
+ *   fire has no burst to have a position within).
+ * - `acrossTriggersEnabled`: samples `curvePoints` at (a persistent count
+ *   of how many triggers this node has had so far, wrapped modulo
+ *   `triggerCycleLength`) / `triggerCycleLength` -- advances exactly one
+ *   step *per trigger event*, not per unit of elapsed time, so it stays
+ *   in sync with the pattern's own cadence even if that cadence isn't
+ *   steady (manual clicks, a tempo change, graph-cascaded triggers of
+ *   varying gaps). This is what makes a single-fire node's value
+ *   actually move from one trigger to the next, unlike
+ *   duringTriggerEnabled/fireEnabled above.
+ * - `continuousEnabled`: samples `curvePoints` against a free-running
+ *   clock, looped over its own `continuousLoopSeconds`, entirely
+ *   independent of triggers or fires -- never resets, keeps looping
+ *   whether or not anything is actually playing.
+ * - `useWander`: bruit-kit's driftMath retarget-then-glide random walk,
+ *   at `wanderSpeed`, continuous and trigger-independent like
+ *   `continuousEnabled` but random rather than a drawn shape.
+ *
+ * The four curve-based toggles share one `curvePoints` shape (checking
+ * more than one samples the *same* curve several different ways, rather
+ * than needing separately-drawn curves) -- only shown in the UI once at
+ * least one of them is checked (see nodeMenu.ts's motionFields).
+ * `fallback` is when nothing is enabled at all: baked into the caller,
+ * not stored here (range start for position, full range length for
+ * duration -- see rangeAtTime). */
 export interface MotionConfig {
-  mode: MotionMode;
+  useFixed: boolean;
   fixedValue: number;
+
   curvePoints: AutomationPoint[];
+  duringTriggerEnabled: boolean;
+  fireEnabled: boolean;
+  acrossTriggersEnabled: boolean;
+  /** Only meaningful while acrossTriggersEnabled -- how many triggers one
+   * full lap of the curve spans before wrapping back to position 0. */
+  triggerCycleLength: number;
+  continuousEnabled: boolean;
+  /** Only meaningful while continuousEnabled -- independent of
+   * triggerPeriodSeconds on purpose (see continuousEnabled's own doc
+   * comment: the whole point is *not* tracking the trigger's own
+   * cadence). */
+  continuousLoopSeconds: number;
+
+  useWander: boolean;
   wanderSpeed: number;
+
   min: number;
   max: number;
 }
@@ -82,9 +132,16 @@ export function createMotionConfig(
   fixedValue = 1,
 ): MotionConfig {
   return {
-    mode: "none",
+    useFixed: false,
     fixedValue,
     curvePoints,
+    duringTriggerEnabled: false,
+    fireEnabled: false,
+    acrossTriggersEnabled: false,
+    triggerCycleLength: 8,
+    continuousEnabled: false,
+    continuousLoopSeconds: 4,
+    useWander: false,
     wanderSpeed: 0.5,
     min,
     max,
@@ -103,16 +160,29 @@ function ascendingCurve(): AutomationPoint[] {
 }
 
 /** Default rateMotion: fixed at 1.0 (normal speed/pitch, tape-style --
- * shifts together), in a plausible [0.1, 5] multiplier range for when
- * curve mode is switched on -- unlike positionMotion/durationMotion,
- * "none" isn't a meaningful mode here (there's no separate not-moving
- * fallback distinct from "fixed at 1.0"), so this starts in "fixed"
- * rather than createMotionConfig's own "none" default. */
+ * shifts together), in a plausible [0.1, 5] multiplier range for when a
+ * curve toggle is switched on -- unlike positionMotion/durationMotion,
+ * "nothing enabled" isn't a meaningful default here (there's no separate
+ * not-moving fallback distinct from "fixed at 1.0"), so this starts with
+ * useFixed already on rather than createMotionConfig's own all-off
+ * default. fireEnabled is the natural first toggle to reach for once
+ * fixed is turned off for a curveSpaced node (sweeping rate across a
+ * burst); acrossTriggersEnabled is the one for a single-fire node
+ * (stepping rate from one trigger to the next) -- see MotionConfig's own
+ * doc comment on both. Everything still starts off same as every other
+ * toggle; nothing here restricts which the user can actually check. */
 function createRateMotion(): MotionConfig {
   return {
-    mode: "fixed",
+    useFixed: true,
     fixedValue: 1,
     curvePoints: ascendingCurve(),
+    duringTriggerEnabled: false,
+    fireEnabled: false,
+    acrossTriggersEnabled: false,
+    triggerCycleLength: 8,
+    continuousEnabled: false,
+    continuousLoopSeconds: 4,
+    useWander: false,
     wanderSpeed: 0.5,
     min: 0.1,
     max: 5,
@@ -129,17 +199,16 @@ export interface SampleNode {
   color: string;
   /** 0..1 fractions of the loaded buffer's own duration -- the base range
    * range motion (below) moves away from and returns to being the default
-   * when motion is "none". Directional, not an unordered {lo,hi} bound:
-   * if start > end, the fragment wraps through the buffer's end back to
-   * its start (see wrappedLength). */
+   * when nothing in positionMotion is enabled. Directional, not an
+   * unordered {lo,hi} bound: if start > end, the fragment wraps through
+   * the buffer's end back to its start (see wrappedLength). */
   range: WaveformRange;
   direction: Direction;
   /** Tape-style playback rate multiplier (1.0 = normal; shifts pitch and
-   * speed together) -- "fixed" mode is a constant multiplier; "curve"
-   * mode is evaluated once per fire, same as durationMotion (see
-   * SampleNodeEngine.perFireValue's own doc comment): swept across a
-   * curveSpaced burst's own real span, or sampled at the curve's own
-   * start for a single fire. */
+   * speed together) -- see MotionConfig's own doc comment for the five
+   * ways it can move (during a trigger, per fire, across triggers,
+   * continuously, or random wander, any combination at once). Defaults
+   * to a plain fixed 1.0 (see createRateMotion). */
   rateMotion: MotionConfig;
   /** Declick fade in/out applied at every fire's own start/end. */
   fadeMs: number;
@@ -155,10 +224,10 @@ export interface SampleNode {
 
   positionMotion: MotionConfig;
   /** How much of the candidate range actually plays on a given fire --
-   * 0 = (clamped to) a sliver, 1 = the range's own full length. Governs a
-   * single fire's playback duration directly (span / rate), evaluated at
-   * each fire's own time same as positionMotion, so a repeatedly-triggered
-   * single-fire node can "breathe" in duration too, not just position. */
+   * 0 = (clamped to) a sliver, 1 = the range's own full length. See
+   * MotionConfig's own doc comment for the four ways it can move; a
+   * repeatedly-triggered node can "breathe" in duration, not just
+   * position, once any of them is enabled. */
   durationMotion: MotionConfig;
 
   /** This node's own effect chain, applied to its voices before they join
@@ -284,7 +353,7 @@ export function createSampleNode(color: string): SampleNode {
 
     // Position motion's [min,max] is a fraction-of-range (not
     // fraction-of-buffer -- see MotionConfig's own doc comment) excursion
-    // for the range's start point; default off (mode: "none") until the
+    // for the range's start point; every toggle defaults off until the
     // user opts in. Duration motion's [min,max] is a fraction of the
     // range's own length -- clamped to a 0.01 floor regardless of this
     // config (see SampleNodeEngine.rangeAtTime) so it can never fully

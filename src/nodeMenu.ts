@@ -15,7 +15,7 @@
 // re-render (e.g. adding an effect), rather than snapping back to fully
 // zoomed out every time.
 
-import { getEffectParamOptions } from "bruit-kit/audio";
+import { type AutomationPoint, getEffectParamOptions } from "bruit-kit/audio";
 import {
   EFFECT_TABLE,
   type Field,
@@ -210,113 +210,228 @@ export function createNodeMenu(
       seconds === null ? "Selection: --" : `Selection: ${seconds.toFixed(3)}s`;
   }
 
+  /** Builds the fields for one of a node's three MotionConfig-driven
+   * controls (position/duration/rate) -- a checklist, not a single-select
+   * mode, since more than one can be checked at once and their curve
+   * samplings sum (see MotionConfig's own doc comment). Only the fields
+   * relevant to the config's *current* state render at all: fixedValue
+   * alone while useFixed is on; the checklist (plus min/max) once it's
+   * off; each domain's own extra field (continuous's loop length) only
+   * once that domain is checked; the shared curve editor only once at
+   * least one curve domain is checked -- so an unused control stays a
+   * single checkbox rather than a wall of dead fields (this was the
+   * whole point of moving off a single mode <select>: nothing has to be
+   * visible all the time). */
   function motionFields(
     node: SampleNode,
     key: "positionMotion" | "durationMotion" | "rateMotion",
     labelPrefix: string,
     options: {
-      /** Restricts the mode <select>'s own options -- rateMotion only
-       * offers fixed/curve (see MotionConfig's own doc comment: there's
-       * no meaningful "none"/wander/both for a per-fire rate multiplier
-       * the way there is for position/duration). Defaults to all five. */
-      modes?: MotionConfig["mode"][];
       /** UI slider bounds for fixedValue/min/max -- position/duration
        * work in [0,1] range-local fractions, but rateMotion is a
        * multiplier (0.1..5 by default, see createRateMotion). */
       valueMin?: number;
       valueMax?: number;
       valueStep?: number;
-      /** Omits the wander speed field entirely when the mode select
-       * doesn't offer wander/both (rateMotion) -- showing a control that
-       * can never take effect would just be confusing clutter. */
-      showWanderSpeed?: boolean;
+      /** Hides the "per fire" checkbox -- rateMotion's own case: for a
+       * single fire (the common/default firing pattern), fireEnabled has
+       * no burst to sample a position from and always freezes at the
+       * curve's own start (see evaluateMotion's own doc comment), which
+       * reads as "the curve does nothing" for anyone not specifically
+       * using curveSpaced. What's actually wanted there -- continuous
+       * pitch movement *during* a single fire's own playback -- isn't
+       * built yet (see TODO.md); hiding this in the meantime rather than
+       * leaving a checkbox that looks broken. Still fully enabled for
+       * position/duration, and still honored by the engine even for rate
+       * if a curveSpaced node's config already has it set from before
+       * this was hidden. */
+      showFireOption?: boolean;
     } = {},
   ): Field[] {
     const {
-      modes = ["none", "fixed", "curve", "wander", "both"],
       valueMin = 0,
       valueMax = 1,
       valueStep = 0.01,
-      showWanderSpeed = true,
+      showFireOption = true,
     } = options;
     const config = node[key];
     // Reads the freshest config at call time, not the `config` captured
     // above -- these fields' onChange handlers all survive from the last
     // render() with no re-render in between (update() never re-renders;
-    // only effectsFields' own onChange does), so spreading the stale
-    // closured `config` here would silently revert whatever an earlier
-    // field's own change in this same visit had just set (e.g. flipping
-    // mode to "curve" then adjusting min would spread from the
-    // still-"none" snapshot and undo the mode change).
+    // only effectsFields' own onChange, and the explicit render() calls
+    // below, do), so spreading the stale closured `config` here would
+    // silently revert whatever an earlier field's own change in this
+    // same visit had just set.
     const updateMotion = (patch: Partial<MotionConfig>) => {
       const current = engine.getNode(node.id)?.[key] ?? config;
       update({ [key]: { ...current, ...patch } });
     };
+    // A visibility-affecting toggle (useFixed, or any of the three domain
+    // checkboxes) needs a full refresh, same reason sweep/lfo's own
+    // "Target effect" onChange calls render() -- a value-only field
+    // (fixedValue, min, max, a curve edit) doesn't change which other
+    // fields should be showing, so it skips this.
+    const updateMotionAndRender = (patch: Partial<MotionConfig>) => {
+      updateMotion(patch);
+      render();
+    };
+
+    const anyCurveDomainEnabled =
+      config.duringTriggerEnabled ||
+      config.fireEnabled ||
+      config.acrossTriggersEnabled ||
+      config.continuousEnabled;
+
     return [
       {
-        key: `${key}-mode`,
-        label: `${labelPrefix} motion`,
-        kind: "select",
-        value: config.mode,
-        options: modes,
-        onChange: (value) =>
-          updateMotion({ mode: value as MotionConfig["mode"] }),
+        key: `${key}-useFixed`,
+        label: `${labelPrefix} use fixed value`,
+        kind: "checkbox",
+        value: config.useFixed,
+        onChange: (value) => updateMotionAndRender({ useFixed: value }),
       },
-      {
-        key: `${key}-fixedValue`,
-        label: `${labelPrefix} fixed value`,
-        kind: "range",
-        value: config.fixedValue,
-        min: valueMin,
-        max: valueMax,
-        step: valueStep,
-        indented: true,
-        onChange: (value) => updateMotion({ fixedValue: value }),
-      },
-      {
-        key: `${key}-min`,
-        label: `${labelPrefix} min`,
-        kind: "range",
-        value: config.min,
-        min: valueMin,
-        max: valueMax,
-        step: valueStep,
-        indented: true,
-        onChange: (value) => updateMotion({ min: value }),
-      },
-      {
-        key: `${key}-max`,
-        label: `${labelPrefix} max`,
-        kind: "range",
-        value: config.max,
-        min: valueMin,
-        max: valueMax,
-        step: valueStep,
-        indented: true,
-        onChange: (value) => updateMotion({ max: value }),
-      },
-      ...(showWanderSpeed
+      ...(config.useFixed
         ? [
             {
-              key: `${key}-wanderSpeed`,
-              label: `${labelPrefix} wander speed`,
+              key: `${key}-fixedValue`,
+              label: `${labelPrefix} fixed value`,
               kind: "range" as const,
-              value: config.wanderSpeed,
-              min: 0,
-              max: 1,
-              step: 0.01,
+              value: config.fixedValue,
+              min: valueMin,
+              max: valueMax,
+              step: valueStep,
               indented: true,
-              onChange: (value: number) => updateMotion({ wanderSpeed: value }),
+              onChange: (value: number) => updateMotion({ fixedValue: value }),
             },
           ]
-        : []),
-      {
-        key: `${key}-curve`,
-        label: `${labelPrefix} curve`,
-        kind: "automation",
-        points: config.curvePoints,
-        onChange: (points) => updateMotion({ curvePoints: points }),
-      },
+        : [
+            {
+              key: `${key}-min`,
+              label: `${labelPrefix} min`,
+              kind: "range" as const,
+              value: config.min,
+              min: valueMin,
+              max: valueMax,
+              step: valueStep,
+              indented: true,
+              onChange: (value: number) => updateMotion({ min: value }),
+            },
+            {
+              key: `${key}-max`,
+              label: `${labelPrefix} max`,
+              kind: "range" as const,
+              value: config.max,
+              min: valueMin,
+              max: valueMax,
+              step: valueStep,
+              indented: true,
+              onChange: (value: number) => updateMotion({ max: value }),
+            },
+            {
+              key: `${key}-duringTriggerEnabled`,
+              label: `${labelPrefix} during trigger`,
+              kind: "checkbox" as const,
+              value: config.duringTriggerEnabled,
+              onChange: (value: boolean) =>
+                updateMotionAndRender({ duringTriggerEnabled: value }),
+            },
+            ...(showFireOption
+              ? [
+                  {
+                    key: `${key}-fireEnabled`,
+                    label: `${labelPrefix} per fire`,
+                    kind: "checkbox" as const,
+                    value: config.fireEnabled,
+                    onChange: (value: boolean) =>
+                      updateMotionAndRender({ fireEnabled: value }),
+                  },
+                ]
+              : []),
+            {
+              key: `${key}-acrossTriggersEnabled`,
+              label: `${labelPrefix} across triggers`,
+              kind: "checkbox" as const,
+              value: config.acrossTriggersEnabled,
+              onChange: (value: boolean) =>
+                updateMotionAndRender({ acrossTriggersEnabled: value }),
+            },
+            ...(config.acrossTriggersEnabled
+              ? [
+                  {
+                    key: `${key}-triggerCycleLength`,
+                    label: `${labelPrefix} trigger cycle length`,
+                    kind: "number" as const,
+                    value: config.triggerCycleLength,
+                    min: 1,
+                    max: 64,
+                    step: 1,
+                    indented: true,
+                    onChange: (value: number) =>
+                      updateMotion({ triggerCycleLength: value }),
+                  },
+                ]
+              : []),
+            {
+              key: `${key}-continuousEnabled`,
+              label: `${labelPrefix} continuously`,
+              kind: "checkbox" as const,
+              value: config.continuousEnabled,
+              onChange: (value: boolean) =>
+                updateMotionAndRender({ continuousEnabled: value }),
+            },
+            ...(config.continuousEnabled
+              ? [
+                  {
+                    key: `${key}-continuousLoopSeconds`,
+                    label: `${labelPrefix} continuous loop length (s)`,
+                    kind: "range" as const,
+                    value: config.continuousLoopSeconds,
+                    min: 0.5,
+                    max: 20,
+                    step: 0.5,
+                    indented: true,
+                    onChange: (value: number) =>
+                      updateMotion({ continuousLoopSeconds: value }),
+                  },
+                ]
+              : []),
+            {
+              key: `${key}-useWander`,
+              label: `${labelPrefix} use wander`,
+              kind: "checkbox" as const,
+              value: config.useWander,
+              onChange: (value: boolean) =>
+                updateMotionAndRender({ useWander: value }),
+            },
+            ...(config.useWander
+              ? [
+                  {
+                    key: `${key}-wanderSpeed`,
+                    label: `${labelPrefix} wander speed`,
+                    kind: "range" as const,
+                    value: config.wanderSpeed,
+                    min: 0,
+                    max: 1,
+                    step: 0.01,
+                    indented: true,
+                    onChange: (value: number) =>
+                      updateMotion({ wanderSpeed: value }),
+                  },
+                ]
+              : []),
+            ...(anyCurveDomainEnabled
+              ? [
+                  {
+                    key: `${key}-curve`,
+                    label: `${labelPrefix} curve`,
+                    kind: "automation" as const,
+                    points: config.curvePoints,
+                    onChange: (points: AutomationPoint[]) =>
+                      updateMotion({ curvePoints: points }),
+                  },
+                ]
+              : []),
+          ]),
     ];
   }
 
@@ -682,11 +797,10 @@ export function createNodeMenu(
     renderFields(
       rateSection.body,
       motionFields(node, "rateMotion", "Rate", {
-        modes: ["fixed", "curve"],
         valueMin: 0.1,
         valueMax: 5,
         valueStep: 0.01,
-        showWanderSpeed: false,
+        showFireOption: false,
       }),
     );
     renderFields(
