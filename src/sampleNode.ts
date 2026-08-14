@@ -30,9 +30,27 @@ export type Direction = "forward" | "backward" | "alternating";
  * triggers but never cuts off fires already in flight. */
 export type ArmMode = "manual" | "loop";
 
-/** single: a trigger produces exactly one fire. curveSpaced: a trigger
- * produces `fireCount` fires, gapped according to `intervalCurve`. */
-export type FiringPattern = "single" | "curveSpaced";
+/** single: a trigger produces exactly one fire. fixedCount: a trigger
+ * produces exactly `fireCount` fires, gapped according to
+ * `intervalCurve` sampled by fire index and remapped into
+ * [intervalMinMs, intervalMaxMs] -- the burst's own real span is
+ * whatever that sums to, not directly set. fullTrigger: a trigger keeps
+ * firing, for as long as the node's own triggerPeriodSeconds lasts, with
+ * each gap read from the *same* intervalCurve but sampled by elapsed
+ * time within the trigger instead of fire index -- the curve's shape
+ * sweeps across real time over the course of the trigger (e.g. a
+ * decaying curve makes firing accelerate as the trigger goes on).
+ * randomTrigger: the same open-ended "for as long as the trigger lasts"
+ * shape as fullTrigger, but each gap is drawn uniformly at random from
+ * [intervalMinMs, intervalMaxMs] instead of following intervalCurve --
+ * an unshaped, jittery machine-gun rather than a deliberately swept one.
+ * See SampleNodeEngine.trigger()'s own doc comment for exactly how each
+ * builds its fireTimes. */
+export type FiringPattern =
+  | "single"
+  | "fixedCount"
+  | "fullTrigger"
+  | "randomTrigger";
 
 /** Config for one of a node's three independently-modulated live scalars
  * (position, duration, or rate -- see SampleNode.positionMotion/
@@ -59,14 +77,14 @@ export type FiringPattern = "single" | "curveSpaced";
  *   alike) and completes exactly as the next one is due, same
  *   trigger-relative timing sweepRoute/lfoRoute's own ramps use. For
  *   something evaluated only once per fire (rate, duration), this is
- *   only actually visible across a curveSpaced burst spread out over
+ *   only actually visible across a multi-fire burst spread out over
  *   real time -- a single fire happens at essentially the trigger's own
  *   start, so elapsed time there is always ~0 (see fireEnabled below and
  *   acrossTriggersEnabled for the two ways to get real movement out of a
  *   single-fire node instead).
  * - `fireEnabled`: samples `curvePoints` at this specific fire's own
  *   position within the current firing burst (0 for a single fire, or
- *   the first of a curveSpaced burst; 1 for the burst's last fire) --
+ *   the first of a multi-fire burst; 1 for the burst's last fire) --
  *   baked into that one voice at the instant it fires, never
  *   re-evaluated during its own playback. Same "always ~0 for a single
  *   fire" caveat as duringTriggerEnabled, for the same reason (a single
@@ -166,7 +184,7 @@ function ascendingCurve(): AutomationPoint[] {
  * not-moving fallback distinct from "fixed at 1.0"), so this starts with
  * useFixed already on rather than createMotionConfig's own all-off
  * default. fireEnabled is the natural first toggle to reach for once
- * fixed is turned off for a curveSpaced node (sweeping rate across a
+ * fixed is turned off for a multi-fire node (sweeping rate across a
  * burst); acrossTriggersEnabled is the one for a single-fire node
  * (stepping rate from one trigger to the next) -- see MotionConfig's own
  * doc comment on both. Everything still starts off same as every other
@@ -353,15 +371,29 @@ export function createSampleNode(color: string): SampleNode {
 
     // Position motion's [min,max] is a fraction-of-range (not
     // fraction-of-buffer -- see MotionConfig's own doc comment) excursion
-    // for the range's start point; every toggle defaults off until the
-    // user opts in. Duration motion's [min,max] is a fraction of the
-    // range's own length -- clamped to a 0.01 floor regardless of this
-    // config (see SampleNodeEngine.rangeAtTime) so it can never fully
-    // silence a fire. Both default to a plain low-to-high ramp rather
-    // than the generic decay shape -- a predictable sweep to opt into,
-    // not a specific creative choice baked into the default.
-    positionMotion: createMotionConfig(0, 1.0, ascendingCurve(), 0),
-    durationMotion: createMotionConfig(0.01, 1.0, ascendingCurve(), 1),
+    // for the range's start point. Duration motion's [min,max] is a
+    // fraction of the range's own length -- clamped to a 0.01 floor
+    // regardless of this config (see SampleNodeEngine.rangeAtTime) so it
+    // can never fully silence a fire. Both default to fixed (0 = the
+    // range's own start for position, 1.0 = the range's own full length
+    // for duration, same as rateMotion's own fixed-1.0 default) rather
+    // than createMotionConfig's own all-toggles-off default --
+    // functionally identical (both fall back to the same values when
+    // nothing's enabled), but shows a fresh node's Position/Duration
+    // sections as "use fixed value" checked with that value visible,
+    // rather than an ambiguous all-unchecked state that happens to mean
+    // the same thing. Both use a plain low-to-high ramp rather than the
+    // generic decay shape for whenever fixed gets turned off -- a
+    // predictable sweep to opt into, not a specific creative choice
+    // baked into the default.
+    positionMotion: {
+      ...createMotionConfig(0, 1.0, ascendingCurve(), 0),
+      useFixed: true,
+    },
+    durationMotion: {
+      ...createMotionConfig(0.01, 1.0, ascendingCurve(), 1),
+      useFixed: true,
+    },
 
     effects: [],
     sweepRoute: createSweepRoute(),

@@ -424,13 +424,13 @@ export function createNodeMenu(
        * no burst to sample a position from and always freezes at the
        * curve's own start (see evaluateMotion's own doc comment), which
        * reads as "the curve does nothing" for anyone not specifically
-       * using curveSpaced. What's actually wanted there -- continuous
-       * pitch movement *during* a single fire's own playback -- isn't
-       * built yet (see TODO.md); hiding this in the meantime rather than
-       * leaving a checkbox that looks broken. Still fully enabled for
-       * position/duration, and still honored by the engine even for rate
-       * if a curveSpaced node's config already has it set from before
-       * this was hidden. */
+       * using a multi-fire pattern. What's actually wanted there --
+       * continuous pitch movement *during* a single fire's own playback
+       * -- isn't built yet (see TODO.md); hiding this in the meantime
+       * rather than leaving a checkbox that looks broken. Still fully
+       * enabled for position/duration, and still honored by the engine
+       * even for rate if a multi-fire node's config already has it set
+       * from before this was hidden. */
       showFireOption?: boolean;
     } = {},
   ): Field[] {
@@ -831,50 +831,78 @@ export function createNodeMenu(
         label: "Firing pattern",
         kind: "select",
         value: node.firingPattern,
-        options: ["single", "curveSpaced"],
-        onChange: (value) =>
-          update({ firingPattern: value as SampleNode["firingPattern"] }),
+        options: [
+          { value: "single", label: "Single" },
+          { value: "fixedCount", label: "Fixed count" },
+          { value: "fullTrigger", label: "Full trigger" },
+          { value: "randomTrigger", label: "Random trigger" },
+        ],
+        onChange: (value) => {
+          update({ firingPattern: value as SampleNode["firingPattern"] });
+          // The fields below depend on which pattern is selected -- needs
+          // a full refresh, same reason sweep/lfo's own "Target effect"
+          // onChange calls render().
+          render();
+        },
       },
-      {
-        key: "fireCount",
-        label: "Fire count",
-        kind: "number",
-        value: node.fireCount,
-        min: 1,
-        max: 64,
-        step: 1,
-        indented: true,
-        onChange: (value) => update({ fireCount: value }),
-      },
-      {
-        key: "intervalMinMs",
-        label: "Interval min (ms)",
-        kind: "number",
-        value: node.intervalMinMs,
-        min: 1,
-        max: 5000,
-        step: 1,
-        indented: true,
-        onChange: (value) => update({ intervalMinMs: value }),
-      },
-      {
-        key: "intervalMaxMs",
-        label: "Interval max (ms)",
-        kind: "number",
-        value: node.intervalMaxMs,
-        min: 1,
-        max: 5000,
-        step: 1,
-        indented: true,
-        onChange: (value) => update({ intervalMaxMs: value }),
-      },
-      {
-        key: "intervalCurve",
-        label: "Interval curve (per fire)",
-        kind: "automation",
-        points: node.intervalCurve,
-        onChange: (points) => update({ intervalCurve: points }),
-      },
+      ...(node.firingPattern === "fixedCount"
+        ? [
+            {
+              key: "fireCount",
+              label: "Fire count",
+              kind: "number" as const,
+              value: node.fireCount,
+              min: 1,
+              max: 64,
+              step: 1,
+              indented: true,
+              onChange: (value: number) => update({ fireCount: value }),
+            },
+          ]
+        : []),
+      ...(node.firingPattern !== "single"
+        ? [
+            {
+              key: "intervalMinMs",
+              label: "Interval min (ms)",
+              kind: "number" as const,
+              value: node.intervalMinMs,
+              min: 1,
+              max: 5000,
+              step: 1,
+              indented: true,
+              onChange: (value: number) => update({ intervalMinMs: value }),
+            },
+            {
+              key: "intervalMaxMs",
+              label: "Interval max (ms)",
+              kind: "number" as const,
+              value: node.intervalMaxMs,
+              min: 1,
+              max: 5000,
+              step: 1,
+              indented: true,
+              onChange: (value: number) => update({ intervalMaxMs: value }),
+            },
+          ]
+        : []),
+      // fixedCount samples this by fire index, fullTrigger by elapsed
+      // time within the trigger (see FiringPattern's own doc comment) --
+      // randomTrigger draws each gap uniformly at random instead, with
+      // no curve to edit.
+      ...(node.firingPattern === "fixedCount" ||
+      node.firingPattern === "fullTrigger"
+        ? [
+            {
+              key: "intervalCurve",
+              label: "Interval curve",
+              kind: "automation" as const,
+              points: node.intervalCurve,
+              onChange: (points: AutomationPoint[]) =>
+                update({ intervalCurve: points }),
+            },
+          ]
+        : []),
     ];
   }
 

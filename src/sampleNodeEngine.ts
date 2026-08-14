@@ -300,15 +300,24 @@ export class SampleNodeEngine {
     return this.runtime.get(id)?.liveRange;
   }
 
-  /** One trigger cycle: starts the node's firing pattern (a single fire,
-   * or a curve-spaced burst of `fireCount`, each spaced by `intervalCurve`
-   * remapped into [intervalMinMs, intervalMaxMs]) -- callable directly
-   * (a manual click) or by the scheduler tick (a loop-armed node's next
-   * due trigger). Each fire reads the range motion's *precisely computed
-   * future* value for curve-driven motion (a pure function of time), or
-   * the current wander snapshot for wander-driven motion (not
-   * predictable ahead of time without simulating the random walk
-   * forward, which isn't worth the complexity here).
+  /** One trigger cycle: starts the node's firing pattern -- a single
+   * fire; a fixedCount burst of `fireCount` fires, gapped according to
+   * `intervalCurve` sampled by fire index and remapped into
+   * [intervalMinMs, intervalMaxMs]; a fullTrigger burst that keeps firing
+   * (same intervalCurve, but sampled by elapsed time within the trigger
+   * instead of fire index) for as long as the node's own
+   * triggerPeriodSeconds lasts; or a randomTrigger burst, the same
+   * open-ended "for as long as the trigger lasts" shape as fullTrigger
+   * but with each gap drawn uniformly at random from [intervalMinMs,
+   * intervalMaxMs] instead of following intervalCurve (see
+   * FiringPattern's own doc comment) -- callable directly (a manual
+   * click) or by the scheduler tick (a loop-armed node's next due
+   * trigger). Each fire reads the
+   * range motion's *precisely computed future* value for curve-driven
+   * motion (a pure function of time), or the current wander snapshot for
+   * wander-driven motion (not predictable ahead of time without
+   * simulating the random walk forward, which isn't worth the complexity
+   * here).
    *
    * A no-op while disarmed ("off" in the node menu's own header toggle),
    * regardless of *how* trigger() was reached -- a manual click
@@ -319,16 +328,16 @@ export class SampleNodeEngine {
    * bypassing arm/trigger entirely, so it stays unaffected by armed.
    *
    * Every fire's own time is computed in a first pass (gaps depend only
-   * on intervalCurve/fireCount, never on duration) before any of them
-   * actually fire, so a fireEnabled curve can be swept across the burst's
-   * own real span -- first fire = curve position 0, last fire = curve
-   * position 1 -- rather than sampled off the continuous audio clock the
-   * way a duringTriggerEnabled curve is (see evaluateMotion's own doc
-   * comment): with only one fire, "position within this burst" is always
-   * exactly 0, which is why fireEnabled (or duringTriggerEnabled) alone
-   * freezes a single-fire node's value at the curve's own start --
-   * acrossTriggersEnabled (or continuousEnabled) is the way to get real
-   * movement out of a single-fire node instead. */
+   * on intervalCurve/fireCount/triggerPeriodSeconds, never on duration)
+   * before any of them actually fire, so a fireEnabled curve can be swept
+   * across the burst's own real span -- first fire = curve position 0,
+   * last fire = curve position 1 -- rather than sampled off the
+   * continuous audio clock the way a duringTriggerEnabled curve is (see
+   * evaluateMotion's own doc comment): with only one fire, "position
+   * within this burst" is always exactly 0, which is why fireEnabled (or
+   * duringTriggerEnabled) alone freezes a single-fire node's value at the
+   * curve's own start -- acrossTriggersEnabled (or continuousEnabled) is
+   * the way to get real movement out of a single-fire node instead. */
   trigger(id: string): void {
     const node = this.nodes.get(id);
     const runtime = this.runtime.get(id);
@@ -337,8 +346,6 @@ export class SampleNodeEngine {
     if (!runtime.armed) return;
 
     const now = this.audioContext.currentTime;
-    const count =
-      node.firingPattern === "single" ? 1 : Math.max(1, node.fireCount);
 
     // Resyncs positionMotion's curve phase to 0 right as this trigger
     // starts -- see NodeRuntime.lastTriggerAt's own doc comment.
@@ -351,22 +358,74 @@ export class SampleNodeEngine {
 
     this.emitEvent(id, "triggerStart");
 
+    // Shared by fullTrigger/randomTrigger below -- a hard cap on fire
+    // count, independent of triggerPeriodSeconds, guarding against a
+    // runaway loop if intervalMinMs is ever 0 or near-0 (each gap is
+    // also floored at 1ms in both branches, but this is a second,
+    // unconditional line of defense).
+    const MAX_OPEN_ENDED_FIRES = 500;
+
     const fireTimes = [now];
-    for (let i = 1; i < count; i++) {
-      const t = count > 1 ? i / (count - 1) : 0;
-      const gapMs = sampleCurveAt(node.intervalCurve, t, {
-        min: node.intervalMinMs,
-        max: node.intervalMaxMs,
-      });
-      fireTimes.push(fireTimes[i - 1] + Math.max(0, gapMs) / 1000);
+    if (node.firingPattern === "fixedCount") {
+      const count = Math.max(1, node.fireCount);
+      for (let i = 1; i < count; i++) {
+        const t = count > 1 ? i / (count - 1) : 0;
+        const gapMs = sampleCurveAt(node.intervalCurve, t, {
+          min: node.intervalMinMs,
+          max: node.intervalMaxMs,
+        });
+        fireTimes.push(
+          fireTimes[fireTimes.length - 1] + Math.max(0, gapMs) / 1000,
+        );
+      }
+    } else if (node.firingPattern === "fullTrigger") {
+      // Same intervalCurve as fixedCount, but sampled by elapsed time
+      // within the trigger (0 at trigger start, 1 a full
+      // triggerPeriodSeconds later) rather than by fire index -- there's
+      // no fixed count to index by, since firing continues for as long
+      // as the trigger's own period lasts. Each fire reads the curve at
+      // its own position to decide the delay before the *next* fire, so
+      // the curve's shape sweeps across real time over the course of the
+      // trigger (e.g. a decaying curve means gaps shrink -- firing
+      // accelerates -- as the trigger goes on).
+      while (fireTimes.length < MAX_OPEN_ENDED_FIRES) {
+        const elapsedFraction = Math.min(
+          1,
+          (fireTimes[fireTimes.length - 1] - now) / node.triggerPeriodSeconds,
+        );
+        const gapMs = sampleCurveAt(node.intervalCurve, elapsedFraction, {
+          min: node.intervalMinMs,
+          max: node.intervalMaxMs,
+        });
+        const nextTime =
+          fireTimes[fireTimes.length - 1] + Math.max(1, gapMs) / 1000;
+        if (nextTime - now >= node.triggerPeriodSeconds) break;
+        fireTimes.push(nextTime);
+      }
+    } else if (node.firingPattern === "randomTrigger") {
+      // Same "keep firing for the whole trigger period" shape as
+      // fullTrigger, but each gap is drawn uniformly at random from
+      // [intervalMinMs, intervalMaxMs] instead of following
+      // intervalCurve -- an unshaped, jittery machine-gun rather than a
+      // deliberately swept one.
+      while (fireTimes.length < MAX_OPEN_ENDED_FIRES) {
+        const gapMs =
+          node.intervalMinMs +
+          Math.random() * Math.max(0, node.intervalMaxMs - node.intervalMinMs);
+        const nextTime =
+          fireTimes[fireTimes.length - 1] + Math.max(1, gapMs) / 1000;
+        if (nextTime - now >= node.triggerPeriodSeconds) break;
+        fireTimes.push(nextTime);
+      }
     }
     const burstSpan = fireTimes[fireTimes.length - 1] - now;
+    const count = fireTimes.length;
 
     let lastFireEndTime = now;
     for (let i = 0; i < count; i++) {
       const fireTime = fireTimes[i];
       const burstPosition =
-        node.firingPattern === "curveSpaced" && burstSpan > 0
+        node.firingPattern !== "single" && burstSpan > 0
           ? (fireTime - now) / burstSpan
           : null;
       const range = this.rangeAtTime(
@@ -622,7 +681,7 @@ export class SampleNodeEngine {
    * (see wrappedLength's own doc comment) just rescoped one level in.
    *
    * `burstPosition` (0..1, or null) is trigger()'s own precomputed
-   * "how far through this curveSpaced burst is this fire" -- fed to
+   * "how far through this multi-fire burst is this fire" -- fed to
    * evaluateMotion's fireEnabled contribution. `triggerIndex` defaults to
    * the runtime's own current value (tick()'s continuous live-overlay
    * evaluation has no specific trigger to pass one from), but trigger()

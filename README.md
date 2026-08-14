@@ -75,11 +75,15 @@ make run-image     # run it locally at http://localhost:8080
 Each sample node combines a few independent controls, which recombine
 into a wide range of behaviors rather than needing special cases:
 
-- **Arm / trigger / fire.** Arming a node turns it on. `manual` mode
+- **Arm / trigger / fire.** Arming a node turns it on (`Off` blocks all
+  triggering — manual clicks and graph edges alike). `Manual` mode
   treats a click (or an inbound graph edge — see below) as one trigger;
-  `loop` mode generates a trigger periodically while armed. Each trigger
-  produces one fire (a single playback) or, in `curveSpaced` mode, a
-  burst of many fires spaced by a drawn breakpoint curve.
+  `Loop` mode generates a trigger periodically while armed. Each trigger
+  produces one fire (`single`); a fixed burst of `fireCount` fires spaced
+  by a drawn breakpoint curve sampled by fire index (`fixedCount`); or
+  fires continuously for the whole trigger period, spaced either by that
+  same curve swept across elapsed time instead (`fullTrigger`) or by
+  gaps drawn uniformly at random, no curve (`randomTrigger`).
 - **Direction, speed, pitch.** A fire plays its range forward, backward,
   or alternating (which flips every fire, so ping-pong emerges across a
   burst). Rate shifts speed and pitch together; an optional pitch-shift
