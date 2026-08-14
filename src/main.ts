@@ -40,6 +40,9 @@ const stopRecordButtonEl = document.querySelector<HTMLButtonElement>(
 )!;
 const downloadLinkEl =
   document.querySelector<HTMLAnchorElement>("#download-link")!;
+const resetAudioButtonEl = document.querySelector<HTMLButtonElement>(
+  "#reset-audio-button",
+)!;
 
 const NODE_COLORS = ["#ffb454", "#4c7dff", "#6fdc8c", "#ff6b9d", "#c792ea"];
 
@@ -57,6 +60,21 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     preloadSampleRateReducerWorklet(audioContext),
   ]);
   const masterBus = new MasterBus(audioContext, engine.output);
+
+  // Recovers from a voice stuck forever mixing NaN into the graph (the
+  // confirmed, reproduced way audio goes permanently silent -- see
+  // SampleNodeEngine.clampRateMultiplier's own doc comment) or a
+  // corrupted master effect's internal state -- see
+  // SampleNodeEngine.panic()/MasterBus.panic()'s own doc comments for
+  // exactly what each rebuilds. Neither touches any node's own
+  // SampleNode data or the patch graph, so this is strictly less
+  // destructive than the page reload it replaces (which would also lose
+  // the loaded sample and the whole patch, since there's no save/load
+  // persistence yet).
+  resetAudioButtonEl.addEventListener("click", () => {
+    engine.panic();
+    masterBus.panic();
+  });
 
   function syncMasterEffectsPanel(): void {
     renderFields(

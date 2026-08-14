@@ -88,6 +88,33 @@ interface NodeAudio {
   modulatorConnectedTo: AudioParam | null;
 }
 
+/** Floors (and caps) a rate multiplier before it's ever used for
+ * `12 * Math.log2(rateMultiplier)` or as a division denominator --
+ * evaluateMotion's own contribution-summing formula
+ * (`sum - (n-1)*center`) has no floor, and *can* legitimately land at or
+ * below 0 when more than one rateMotion domain is enabled at once (e.g.
+ * duringTriggerEnabled + acrossTriggersEnabled both sampling near the
+ * curve's own low end simultaneously) -- ordinary settings, not a
+ * pathological edge case. `Math.log2` of a non-positive number is
+ * `NaN`/`-Infinity`, and unlike position (wrapFraction) or duration
+ * (already clamped), rate had nothing catching that before this: a
+ * NaN `rateSemitones` makes that voice's own `totalFrames` (spanFrames /
+ * rate, in the worklet) NaN too -- and since `elapsed >= totalFrames`
+ * (the voice's own termination check) is never true once totalFrames is
+ * NaN, the voice never ends. Confirmed by direct reproduction: it stays
+ * in the worklet's voice pool forever, continuously mixing NaN into
+ * every future render block via `+=` and silencing everything downstream
+ * for the rest of the session -- not a one-time blip, and not fixed by
+ * waiting. See SampleNodeEngine.panic() for the recovery path (clearing
+ * a voice pool that's already stuck this way), which this prevents from
+ * ever being needed for *this* particular cause. 0.01 matches
+ * durationMotion's own floor for the same "shrink to a
+ * sliver, never to nothing" reasoning; 100 is a generous but finite
+ * ceiling against the same formula summing unexpectedly high. */
+function clampRateMultiplier(value: number): number {
+  return Math.min(100, Math.max(0.01, value));
+}
+
 /** Owns the loaded buffer, every SampleNode, and the single shared
  * scheduler tick that drives loop-mode triggering and range motion (see
  * PLAN's "Core model" -- arm -> trigger -> fire, and range motion's
@@ -257,6 +284,29 @@ export class SampleNodeEngine {
     // without this, an active LFO route would keep its connection to the
     // old, now-disposed chain's param instead of the new one.
     this.reconcileLfoConnection(id);
+  }
+
+  /** Recovers from a voice that's stuck forever mixing NaN into its own
+   * player's output on every render block (see clampRateMultiplier's own
+   * doc comment for the confirmed way that happens -- a NaN
+   * `totalFrames` whose `elapsed >= totalFrames` termination check is
+   * never true), or from a per-node effect's own internal state getting
+   * corrupted the same way -- clears every player's in-flight voices
+   * (player.panic()'s own `this.voices = []`) and rebuilds every node's
+   * effect chain from its own current EffectSpec[] (the same rebuild
+   * setNodeEffects does, just for every node at once). Touches nothing
+   * about any node's own SampleNode data (labels, ranges, motion
+   * configs, the patch graph, ...) -- only the underlying Web Audio
+   * nodes get recreated. See MasterBus.panic() for the other half of a
+   * full recovery (the shared limiter + master effects chain), and
+   * main.ts's own "Reset audio" handler for wiring both together. */
+  panic(): void {
+    for (const [id, node] of this.nodes) {
+      const audio = this.audio.get(id);
+      if (!audio) continue;
+      audio.player.panic();
+      this.setNodeEffects(id, node.effects);
+    }
   }
 
   /** Value-only nudge (a range field's continuous "input" events) -- never
@@ -436,15 +486,17 @@ export class SampleNodeEngine {
         triggerIndex,
       );
       const direction = this.resolveDirection(node, runtime);
-      const rateMultiplier = this.evaluateMotion(
-        node.rateMotion,
-        runtime.rateWander,
-        fireTime,
-        runtime.lastTriggerAt,
-        node.triggerPeriodSeconds,
-        burstPosition,
-        triggerIndex,
-        1,
+      const rateMultiplier = clampRateMultiplier(
+        this.evaluateMotion(
+          node.rateMotion,
+          runtime.rateWander,
+          fireTime,
+          runtime.lastTriggerAt,
+          node.triggerPeriodSeconds,
+          burstPosition,
+          triggerIndex,
+          1,
+        ),
       );
       audio.player.playVoice({
         startFraction: range.start,
@@ -635,15 +687,17 @@ export class SampleNodeEngine {
     if (!node || !runtime || !audio || !this.buffer) return null;
     const range = runtime.liveRange;
     const direction = this.resolveDirection(node, runtime);
-    const rateMultiplier = this.evaluateMotion(
-      node.rateMotion,
-      runtime.rateWander,
-      this.audioContext.currentTime,
-      runtime.lastTriggerAt,
-      node.triggerPeriodSeconds,
-      null,
-      runtime.triggerIndex,
-      1,
+    const rateMultiplier = clampRateMultiplier(
+      this.evaluateMotion(
+        node.rateMotion,
+        runtime.rateWander,
+        this.audioContext.currentTime,
+        runtime.lastTriggerAt,
+        node.triggerPeriodSeconds,
+        null,
+        runtime.triggerIndex,
+        1,
+      ),
     );
     return audio.player.playVoice({
       startFraction: range.start,
