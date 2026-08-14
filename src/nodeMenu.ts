@@ -106,11 +106,130 @@ export function createNodeMenu(
   swatch.className = "node-menu-swatch";
   const title = document.createElement("span");
   title.className = "node-menu-title";
-  const closeButton = document.createElement("button");
-  closeButton.textContent = "×";
-  closeButton.className = "node-menu-close";
-  closeButton.addEventListener("click", () => close());
-  header.append(swatch, title, closeButton);
+
+  // Renaming happens inline in the header (see startEditingName) rather
+  // than as a field in the General section -- the pencil button swaps
+  // `title` for this input, focused and pre-filled with the current name.
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "node-menu-name-input";
+  nameInput.hidden = true;
+  const editNameButton = document.createElement("button");
+  editNameButton.type = "button";
+  editNameButton.className = "node-menu-edit-name";
+  editNameButton.textContent = "✎";
+  editNameButton.title = "Rename";
+  editNameButton.addEventListener("click", () => startEditingName());
+
+  function startEditingName(): void {
+    if (!currentId) return;
+    const node = engine.getNode(currentId);
+    if (!node) return;
+    nameInput.value = node.label;
+    title.hidden = true;
+    nameInput.hidden = false;
+    nameInput.focus();
+    nameInput.select();
+  }
+
+  // The only place that actually writes the new label -- both Enter and
+  // a plain blur (clicking away) reach this via nameInput's own "blur"
+  // listener below, so there's exactly one commit path. Escape instead
+  // resets nameInput's value back to the node's current label *before*
+  // blurring (see its own keydown handler), so the blur-triggered commit
+  // here just writes back the unchanged value -- a harmless no-op rather
+  // than a separate cancel path to keep in sync with this one.
+  function commitNameEdit(): void {
+    if (!currentId) return;
+    const value = nameInput.value.trim();
+    if (value) update({ label: value });
+    // update() doesn't re-render the header itself (only the external
+    // node list/waveform/patch graph, via onNodeChanged) -- title's own
+    // text needs setting explicitly here rather than staying stale from
+    // whenever render() last ran.
+    title.textContent = engine.getNode(currentId)?.label ?? value;
+    title.hidden = false;
+    nameInput.hidden = true;
+  }
+
+  nameInput.addEventListener("blur", () => commitNameEdit());
+  nameInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      nameInput.blur();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      if (currentId) nameInput.value = engine.getNode(currentId)?.label ?? "";
+      nameInput.blur();
+    }
+  });
+
+  const headerSpacer = document.createElement("span");
+  headerSpacer.className = "node-menu-header-spacer";
+
+  // Replaces the old "Armed" checkbox + "Arm mode" select (previously two
+  // separate General-section fields) with one 3-way control, in the header
+  // slot the close button used to occupy -- see armToggleButtons' own
+  // wiring below for what each state actually does.
+  type ArmToggleState = "off" | "manual" | "loop";
+  const armToggle = document.createElement("div");
+  armToggle.className = "node-menu-arm-toggle";
+  const armToggleButtons: Record<ArmToggleState, HTMLButtonElement> = {
+    off: document.createElement("button"),
+    manual: document.createElement("button"),
+    loop: document.createElement("button"),
+  };
+  const armToggleLabels: Record<ArmToggleState, string> = {
+    off: "Off",
+    manual: "Manual",
+    loop: "Loop",
+  };
+  for (const state of Object.keys(armToggleButtons) as ArmToggleState[]) {
+    const button = armToggleButtons[state];
+    button.type = "button";
+    button.className = "node-menu-arm-button";
+    button.textContent = armToggleLabels[state];
+    button.addEventListener("click", () => setArmToggle(state));
+    armToggle.appendChild(button);
+  }
+
+  // "off" (armed: false) now genuinely silences the node -- trigger()
+  // itself checks armed regardless of armMode, so a manual click or an
+  // inbound graph edge does nothing until switched to "manual"/"loop".
+  // "manual"/"loop" both set armed: true (armMode alone used to be the
+  // only thing that mattered for triggering; now armed gates it too).
+  function setArmToggle(state: ArmToggleState): void {
+    if (!currentId) return;
+    if (state === "off") {
+      engine.setArmed(currentId, false);
+    } else {
+      engine.setArmed(currentId, true);
+      engine.updateNode(currentId, { armMode: state });
+    }
+    updateArmToggleVisual();
+    onNodeChanged();
+  }
+
+  function updateArmToggleVisual(): void {
+    if (!currentId) return;
+    const node = engine.getNode(currentId);
+    if (!node) return;
+    const state: ArmToggleState = engine.isArmed(currentId)
+      ? node.armMode
+      : "off";
+    for (const key of Object.keys(armToggleButtons) as ArmToggleState[]) {
+      armToggleButtons[key].classList.toggle("is-active", key === state);
+    }
+  }
+
+  header.append(
+    swatch,
+    title,
+    nameInput,
+    editNameButton,
+    headerSpacer,
+    armToggle,
+  );
 
   const waveformContainer = document.createElement("div");
   waveformContainer.className = "node-menu-waveform";
@@ -169,12 +288,79 @@ export function createNodeMenu(
     effectsSection.details,
   );
 
+  // Trigger period + its "snap to selection" shortcut live in one row --
+  // built once as plain DOM (like the header's own controls) rather than
+  // through renderFields, since Field has no compound "range with an
+  // inline button" kind and this is the only thing left in "General"
+  // needing one. updateTriggerPeriodDisplay keeps it in sync on every
+  // render() (node switch, etc.); the input's own "input" listener
+  // updates live during a drag without going through render() at all,
+  // same as every other range field.
+  const triggerPeriodRow = document.createElement("div");
+  triggerPeriodRow.className = "panel-field";
+  const triggerPeriodLabel = document.createElement("label");
+  triggerPeriodLabel.textContent = "Trigger period";
+  const triggerPeriodInput = document.createElement("input");
+  triggerPeriodInput.type = "range";
+  triggerPeriodInput.min = "0.1";
+  triggerPeriodInput.max = "10";
+  triggerPeriodInput.step = "0.1";
+  const triggerPeriodValue = document.createElement("span");
+  triggerPeriodValue.className = "field-value";
+  const triggerPeriodSnapButton = document.createElement("button");
+  triggerPeriodSnapButton.type = "button";
+  triggerPeriodSnapButton.className = "node-menu-snap-button";
+  triggerPeriodSnapButton.textContent = "=";
+  // Sets the trigger period to exactly the selection's own length at
+  // 1.0x (see selectionDurationSeconds) -- with duration motion fixed at
+  // 1.0 (a fire always plays the range's full length) and rate motion
+  // fixed at 1.0 (no speed change), consecutive triggers then land
+  // exactly as the previous fire ends: a clean, continuous loop with no
+  // gap or overlap. Not a guarantee once either is on curve/wander
+  // instead -- a given fire's own actual duration can then differ from
+  // this snapped period.
+  triggerPeriodSnapButton.title = "Snap trigger period to selection";
+
+  function updateTriggerPeriodDisplay(seconds: number): void {
+    triggerPeriodInput.value = String(seconds);
+    triggerPeriodValue.textContent = seconds.toFixed(1);
+  }
+
+  triggerPeriodInput.addEventListener("input", () => {
+    const value = Number(triggerPeriodInput.value);
+    triggerPeriodValue.textContent = value.toFixed(1);
+    update({ triggerPeriodSeconds: value });
+  });
+  triggerPeriodSnapButton.addEventListener("click", () => {
+    if (!currentId) return;
+    const node = engine.getNode(currentId);
+    if (!node) return;
+    const seconds = selectionDurationSeconds(node);
+    if (seconds === null) return;
+    update({ triggerPeriodSeconds: seconds });
+    updateTriggerPeriodDisplay(seconds);
+  });
+
+  triggerPeriodRow.append(
+    triggerPeriodLabel,
+    triggerPeriodInput,
+    triggerPeriodValue,
+    triggerPeriodSnapButton,
+  );
+  generalSection.body.appendChild(triggerPeriodRow);
+
   let zoomableView: ReturnType<typeof createZoomableWaveformRangeView> | null =
     null;
   let waveformNodeId: string | null = null;
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape") close();
+    if (event.key !== "Escape") return;
+    // Don't close the whole panel out from under an in-progress rename --
+    // nameInput's own keydown handler already handles Escape itself
+    // (revert + blur) for that case.
+    const target = event.target as HTMLElement | null;
+    if (target && /^(INPUT|TEXTAREA)$/.test(target.tagName)) return;
+    close();
   }
 
   function close(): void {
@@ -614,67 +800,6 @@ export function createNodeMenu(
     ];
   }
 
-  function generalFields(node: SampleNode): Field[] {
-    return [
-      {
-        key: "label",
-        label: "Name",
-        kind: "text",
-        value: node.label,
-        onChange: (value) => update({ label: value }),
-      },
-      {
-        key: "armed",
-        label: "Armed",
-        kind: "checkbox",
-        value: engine.isArmed(node.id),
-        onChange: (value) => {
-          engine.setArmed(node.id, value);
-          onNodeChanged();
-        },
-      },
-      {
-        key: "armMode",
-        label: "Arm mode",
-        kind: "select",
-        value: node.armMode,
-        options: ["manual", "loop"],
-        onChange: (value) =>
-          update({ armMode: value as SampleNode["armMode"] }),
-      },
-      {
-        key: "triggerPeriodSeconds",
-        label: "Trigger period (s)",
-        kind: "range",
-        value: node.triggerPeriodSeconds,
-        min: 0.1,
-        max: 10,
-        step: 0.1,
-        indented: true,
-        onChange: (value) => update({ triggerPeriodSeconds: value }),
-      },
-      {
-        key: "triggerPeriodSnap",
-        label: "Snap to selection",
-        kind: "button",
-        // Sets the trigger period to exactly the selection's own length at
-        // 1.0x (see selectionDurationSeconds) -- with duration motion
-        // fixed at 1.0 (a fire always plays the range's full length) and
-        // rate motion fixed at 1.0 (no speed change), consecutive
-        // triggers then land exactly as the previous fire ends: a clean,
-        // continuous loop with no gap or overlap. Not a guarantee once
-        // either is on curve/wander instead -- a given fire's own actual
-        // duration can then differ from this snapped period.
-        onClick: () => {
-          const seconds = selectionDurationSeconds(node);
-          if (seconds === null) return;
-          update({ triggerPeriodSeconds: seconds });
-          render();
-        },
-      },
-    ];
-  }
-
   function playbackFields(node: SampleNode): Field[] {
     return [
       {
@@ -789,10 +914,11 @@ export function createNodeMenu(
 
     swatch.style.background = node.color;
     title.textContent = node.label;
+    updateArmToggleVisual();
+    updateTriggerPeriodDisplay(node.triggerPeriodSeconds);
 
     ensureWaveform(node);
 
-    renderFields(generalSection.body, generalFields(node));
     renderFields(playbackSection.body, playbackFields(node));
     renderFields(
       rateSection.body,

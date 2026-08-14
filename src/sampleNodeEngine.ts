@@ -310,6 +310,14 @@ export class SampleNodeEngine {
    * predictable ahead of time without simulating the random walk
    * forward, which isn't worth the complexity here).
    *
+   * A no-op while disarmed ("off" in the node menu's own header toggle),
+   * regardless of *how* trigger() was reached -- a manual click
+   * (main.ts's own Trigger button), a loop-armed node's next due tick,
+   * or a graph-cascaded edge (emitEvent calls this same method) are all
+   * silenced the same way, since this is the one place all three paths
+   * converge. fireNow() is a deliberate exception: it's documented as
+   * bypassing arm/trigger entirely, so it stays unaffected by armed.
+   *
    * Every fire's own time is computed in a first pass (gaps depend only
    * on intervalCurve/fireCount, never on duration) before any of them
    * actually fire, so a fireEnabled curve can be swept across the burst's
@@ -326,6 +334,7 @@ export class SampleNodeEngine {
     const runtime = this.runtime.get(id);
     const audio = this.audio.get(id);
     if (!node || !runtime || !audio || !this.buffer) return;
+    if (!runtime.armed) return;
 
     const now = this.audioContext.currentTime;
     const count =
