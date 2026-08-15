@@ -164,6 +164,22 @@ export function createNodeMenu(
     }
   });
 
+  // Opens the motion config grid (see openMotionConfigModal) -- the only
+  // way left to turn Fixed/Continuous/Trigger/Fire on or off for
+  // Rate/Duration/Position, now that motionValueFields no longer renders
+  // those checkboxes inline (see its own doc comment).
+  const configButton = document.createElement("button");
+  configButton.type = "button";
+  configButton.className = "node-menu-config-button";
+  configButton.textContent = "⚙";
+  configButton.title = "Configure controls";
+  configButton.addEventListener("click", () => {
+    if (!currentId) return;
+    const node = engine.getNode(currentId);
+    if (!node) return;
+    openMotionConfigModal(node);
+  });
+
   const headerSpacer = document.createElement("span");
   headerSpacer.className = "node-menu-header-spacer";
 
@@ -227,6 +243,7 @@ export function createNodeMenu(
     title,
     nameInput,
     editNameButton,
+    configButton,
     headerSpacer,
     armToggle,
   );
@@ -396,18 +413,209 @@ export function createNodeMenu(
       seconds === null ? "Selection: --" : `Selection: ${seconds.toFixed(3)}s`;
   }
 
-  /** Builds the fields for one of a node's three MotionConfig-driven
-   * controls (position/duration/rate) -- a checklist, not a single-select
-   * mode, since more than one can be checked at once and their curve
-   * samplings sum (see MotionConfig's own doc comment). Only the fields
-   * relevant to the config's *current* state render at all: fixedValue
-   * alone while useFixed is on; the checklist (plus min/max) once it's
-   * off; each domain's own extra field (continuous's loop length) only
-   * once that domain is checked; the shared curve editor only once at
-   * least one curve domain is checked -- so an unused control stays a
-   * single checkbox rather than a wall of dead fields (this was the
-   * whole point of moving off a single mode <select>: nothing has to be
-   * visible all the time). */
+  /** Which of a node's three MotionConfig-driven controls the config
+   * grid modal covers, in display order -- shared between the modal's
+   * own grid rows and nothing else (motionValueFields below reads
+   * showFire straight off node.id === "rateMotion" via its own call
+   * sites, same as it always did). `showFire: false` on rate mirrors the
+   * same `showFireOption: false` reasoning render() used to pass
+   * directly into motionFields (see its own removed doc comment: a
+   * single fire has no burst to sample fireEnabled's curve position
+   * from). */
+  const MOTION_ROWS: {
+    key: "rateMotion" | "durationMotion" | "positionMotion";
+    label: string;
+    showFire: boolean;
+  }[] = [
+    { key: "rateMotion", label: "Rate", showFire: false },
+    { key: "durationMotion", label: "Duration", showFire: true },
+    { key: "positionMotion", label: "Position", showFire: true },
+  ];
+
+  /** The grid popup (opened via configButton) -- the only place left that
+   * can turn Fixed/Continuous/Trigger/Fire on or off for any of a node's
+   * three MotionConfig-driven controls at once, across all three rows in
+   * one compact table instead of six always-visible checkboxes buried in
+   * each of three separate accordion sections (see motionValueFields'
+   * own doc comment for the other half of this split).
+   *
+   * "Trigger" is a single checkbox per row, not two -- it's checked
+   * whenever either duringTriggerEnabled or acrossTriggersEnabled is
+   * already true (a derived OR, not a stored flag of its own), and
+   * checking it fresh turns on duringTriggerEnabled as a starting point.
+   * The actual choice between "during" and "across" is made back in the
+   * node menu itself once this is checked, as a mutually-exclusive
+   * select rather than two independent checkboxes (see
+   * motionValueFields's own doc comment on why) -- same as wander, which
+   * never appears in this grid at all, in any form.
+   *
+   * `useFixed` stays mutually exclusive with the other three columns
+   * here, mirroring evaluateMotion's own short-circuit (useFixed ignores
+   * everything else) -- checking Fixed clears Continuous/Trigger/Fire,
+   * and checking any of those three clears Fixed, so the grid can never
+   * show a combination the engine wouldn't actually honor.
+   *
+   * Edits a local draft, not the live node -- every checkbox here
+   * mutates `draft` and re-renders only this table (renderGrid), never
+   * calling update()/onNodeChanged(). "Cancel" (or the × / overlay
+   * click) discards the draft outright; "OK" is the one point all three
+   * drafted configs get committed together via a single update() call. */
+  function openMotionConfigModal(node: SampleNode): void {
+    const draft: Record<(typeof MOTION_ROWS)[number]["key"], MotionConfig> = {
+      rateMotion: { ...node.rateMotion },
+      durationMotion: { ...node.durationMotion },
+      positionMotion: { ...node.positionMotion },
+    };
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const modal = document.createElement("div");
+    modal.className = "modal motion-config-modal";
+    overlay.appendChild(modal);
+
+    function close(): void {
+      overlay.remove();
+    }
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close();
+    });
+
+    const header = document.createElement("div");
+    header.className = "modal-header";
+    const title = document.createElement("span");
+    title.className = "modal-title";
+    title.textContent = "Configure motion";
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.textContent = "×";
+    closeButton.className = "modal-close-button";
+    closeButton.addEventListener("click", close);
+    header.append(title, closeButton);
+    modal.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "modal-body";
+    modal.appendChild(body);
+
+    const table = document.createElement("table");
+    table.className = "motion-config-grid";
+    body.appendChild(table);
+
+    function makeCell(
+      checked: boolean,
+      disabled: boolean,
+      onChange: (value: boolean) => void,
+    ): HTMLTableCellElement {
+      const td = document.createElement("td");
+      const cellInput = document.createElement("input");
+      cellInput.type = "checkbox";
+      cellInput.checked = checked;
+      cellInput.disabled = disabled;
+      cellInput.addEventListener("change", () => onChange(cellInput.checked));
+      td.appendChild(cellInput);
+      return td;
+    }
+
+    function renderGrid(): void {
+      table.innerHTML = "";
+      const headRow = document.createElement("tr");
+      headRow.appendChild(document.createElement("th"));
+      for (const columnLabel of ["Fixed", "Continuous", "Trigger", "Fire"]) {
+        const th = document.createElement("th");
+        th.textContent = columnLabel;
+        headRow.appendChild(th);
+      }
+      table.appendChild(headRow);
+
+      for (const row of MOTION_ROWS) {
+        const config = draft[row.key];
+        const tr = document.createElement("tr");
+        const rowHeader = document.createElement("th");
+        rowHeader.textContent = row.label;
+        rowHeader.scope = "row";
+        tr.appendChild(rowHeader);
+
+        tr.appendChild(
+          makeCell(config.useFixed, false, (checked) => {
+            config.useFixed = checked;
+            if (checked) {
+              config.continuousEnabled = false;
+              config.duringTriggerEnabled = false;
+              config.acrossTriggersEnabled = false;
+              config.fireEnabled = false;
+            }
+            renderGrid();
+          }),
+        );
+        tr.appendChild(
+          makeCell(config.continuousEnabled, false, (checked) => {
+            config.continuousEnabled = checked;
+            if (checked) config.useFixed = false;
+            renderGrid();
+          }),
+        );
+        const triggerActive =
+          config.duringTriggerEnabled || config.acrossTriggersEnabled;
+        tr.appendChild(
+          makeCell(triggerActive, false, (checked) => {
+            if (checked) {
+              config.duringTriggerEnabled = true;
+              config.useFixed = false;
+            } else {
+              config.duringTriggerEnabled = false;
+              config.acrossTriggersEnabled = false;
+            }
+            renderGrid();
+          }),
+        );
+        tr.appendChild(
+          makeCell(config.fireEnabled, !row.showFire, (checked) => {
+            config.fireEnabled = checked;
+            if (checked) config.useFixed = false;
+            renderGrid();
+          }),
+        );
+
+        table.appendChild(tr);
+      }
+    }
+    renderGrid();
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancel";
+    cancelButton.addEventListener("click", close);
+    const okButton = document.createElement("button");
+    okButton.type = "button";
+    okButton.textContent = "OK";
+    okButton.addEventListener("click", () => {
+      update({
+        rateMotion: draft.rateMotion,
+        durationMotion: draft.durationMotion,
+        positionMotion: draft.positionMotion,
+      });
+      close();
+      render();
+    });
+    actions.append(cancelButton, okButton);
+    modal.appendChild(actions);
+
+    document.body.appendChild(overlay);
+  }
+
+  /** Builds the *value* fields for one of a node's three MotionConfig-
+   * driven controls (position/duration/rate) -- Fixed/Continuous/Trigger/
+   * Fire are turned on or off exclusively through the config grid modal
+   * now (see openMotionConfigModal), not here; this only ever renders
+   * the controls relevant to whatever ended up enabled, so an unused
+   * domain shows nothing at all rather than a checkbox. The one
+   * exception is `useWander`, which stays a checkbox here, ungated and
+   * unmoved -- it was never part of the grid (see openMotionConfigModal's
+   * own doc comment on why: it's orthogonal to Fixed/Continuous/Trigger/
+   * Fire, a noise source layered on top of whatever mode a row is
+   * already in, not a mode of its own to pick between). */
   function motionFields(
     node: SampleNode,
     key: "positionMotion" | "durationMotion" | "rateMotion",
@@ -429,19 +637,6 @@ export function createNodeMenu(
        * valueMax when omitted, same as before this split existed. */
       fixedValueMin?: number;
       fixedValueMax?: number;
-      /** Hides the "per fire" checkbox -- rateMotion's own case: for a
-       * single fire (the common/default firing pattern), fireEnabled has
-       * no burst to sample a position from and always freezes at the
-       * curve's own start (see evaluateMotion's own doc comment), which
-       * reads as "the curve does nothing" for anyone not specifically
-       * using a multi-fire pattern. What's actually wanted there --
-       * continuous pitch movement *during* a single fire's own playback
-       * -- isn't built yet (see TODO.md); hiding this in the meantime
-       * rather than leaving a checkbox that looks broken. Still fully
-       * enabled for position/duration, and still honored by the engine
-       * even for rate if a multi-fire node's config already has it set
-       * from before this was hidden. */
-      showFireOption?: boolean;
     } = {},
   ): Field[] {
     const {
@@ -450,7 +645,6 @@ export function createNodeMenu(
       valueStep = 0.01,
       fixedValueMin = valueMin,
       fixedValueMax = valueMax,
-      showFireOption = true,
     } = options;
     const config = node[key];
     // Reads the freshest config at call time, not the `config` captured
@@ -464,9 +658,9 @@ export function createNodeMenu(
       const current = engine.getNode(node.id)?.[key] ?? config;
       update({ [key]: { ...current, ...patch } });
     };
-    // A visibility-affecting toggle (useFixed, or any of the three domain
-    // checkboxes) needs a full refresh, same reason sweep/lfo's own
-    // "Target effect" onChange calls render() -- a value-only field
+    // A visibility-affecting toggle (useWander, or during/across once
+    // Trigger is active) needs a full refresh, same reason sweep/lfo's
+    // own "Target effect" onChange calls render() -- a value-only field
     // (fixedValue, min, max, a curve edit) doesn't change which other
     // fields should be showing, so it skips this.
     const updateMotionAndRender = (patch: Partial<MotionConfig>) => {
@@ -479,79 +673,99 @@ export function createNodeMenu(
       config.fireEnabled ||
       config.acrossTriggersEnabled ||
       config.continuousEnabled;
+    const triggerActive =
+      config.duringTriggerEnabled || config.acrossTriggersEnabled;
+
+    // Wander gets its own checkbox in every mode, Fixed included -- see
+    // evaluateMotion's own doc comment on why useFixed no longer fully
+    // short-circuits it: wander is a noise source layered on whatever
+    // mode a control is in, not an alternative to Fixed. Computed once,
+    // used by both branches below.
+    const wanderFields: Field[] = [
+      {
+        key: `${key}-useWander`,
+        label: `${labelPrefix} use wander`,
+        kind: "checkbox",
+        value: config.useWander,
+        onChange: (value) => updateMotionAndRender({ useWander: value }),
+      },
+      ...(config.useWander
+        ? [
+            {
+              key: `${key}-wanderSpeed`,
+              label: `${labelPrefix} wander speed`,
+              kind: "range" as const,
+              value: config.wanderSpeed,
+              min: 0,
+              max: 1,
+              step: 0.01,
+              indented: true,
+              onChange: (value: number) => updateMotion({ wanderSpeed: value }),
+            },
+          ]
+        : []),
+    ];
+
+    if (config.useFixed) {
+      return [
+        {
+          key: `${key}-fixedValue`,
+          label: `${labelPrefix} fixed value`,
+          kind: "range",
+          value: config.fixedValue,
+          min: fixedValueMin,
+          max: fixedValueMax,
+          step: valueStep,
+          onChange: (value) => updateMotion({ fixedValue: value }),
+        },
+        ...wanderFields,
+      ];
+    }
 
     return [
       {
-        key: `${key}-useFixed`,
-        label: `${labelPrefix} use fixed value`,
-        kind: "checkbox",
-        value: config.useFixed,
-        onChange: (value) => updateMotionAndRender({ useFixed: value }),
+        key: `${key}-min`,
+        label: `${labelPrefix} min`,
+        kind: "range",
+        value: config.min,
+        min: valueMin,
+        max: valueMax,
+        step: valueStep,
+        onChange: (value) => updateMotion({ min: value }),
       },
-      ...(config.useFixed
-        ? [
+      {
+        key: `${key}-max`,
+        label: `${labelPrefix} max`,
+        kind: "range",
+        value: config.max,
+        min: valueMin,
+        max: valueMax,
+        step: valueStep,
+        onChange: (value) => updateMotion({ max: value }),
+      },
+      // "During" and "across" are mutually exclusive, not independent
+      // checkboxes -- exactly one is on whenever Trigger is checked in
+      // the grid (never both, never neither: two checkboxes let both get
+      // unchecked at once, which hid this whole block with no way back
+      // short of reopening the grid). A select enforces that structurally
+      // -- it always has a value.
+      ...(triggerActive
+        ? ([
             {
-              key: `${key}-fixedValue`,
-              label: `${labelPrefix} fixed value`,
-              kind: "range" as const,
-              value: config.fixedValue,
-              min: fixedValueMin,
-              max: fixedValueMax,
-              step: valueStep,
+              key: `${key}-triggerMode`,
+              label: `${labelPrefix} trigger mode`,
+              kind: "select",
+              value: config.acrossTriggersEnabled ? "across" : "during",
+              options: [
+                { value: "during", label: "During trigger" },
+                { value: "across", label: "Across triggers" },
+              ],
               indented: true,
-              onChange: (value: number) => updateMotion({ fixedValue: value }),
-            },
-          ]
-        : [
-            {
-              key: `${key}-min`,
-              label: `${labelPrefix} min`,
-              kind: "range" as const,
-              value: config.min,
-              min: valueMin,
-              max: valueMax,
-              step: valueStep,
-              indented: true,
-              onChange: (value: number) => updateMotion({ min: value }),
-            },
-            {
-              key: `${key}-max`,
-              label: `${labelPrefix} max`,
-              kind: "range" as const,
-              value: config.max,
-              min: valueMin,
-              max: valueMax,
-              step: valueStep,
-              indented: true,
-              onChange: (value: number) => updateMotion({ max: value }),
-            },
-            {
-              key: `${key}-duringTriggerEnabled`,
-              label: `${labelPrefix} during trigger`,
-              kind: "checkbox" as const,
-              value: config.duringTriggerEnabled,
-              onChange: (value: boolean) =>
-                updateMotionAndRender({ duringTriggerEnabled: value }),
-            },
-            ...(showFireOption
-              ? [
-                  {
-                    key: `${key}-fireEnabled`,
-                    label: `${labelPrefix} per fire`,
-                    kind: "checkbox" as const,
-                    value: config.fireEnabled,
-                    onChange: (value: boolean) =>
-                      updateMotionAndRender({ fireEnabled: value }),
-                  },
-                ]
-              : []),
-            {
-              key: `${key}-acrossTriggersEnabled`,
-              label: `${labelPrefix} across triggers`,
-              kind: "checkbox" as const,
-              value: config.acrossTriggersEnabled,
-              onChange: (value: boolean) =>
-                updateMotionAndRender({ acrossTriggersEnabled: value }),
+              onChange: (value: string) =>
+                updateMotionAndRender({
+                  duringTriggerEnabled: value === "during",
+                  acrossTriggersEnabled: value === "across",
+                }),
             },
             ...(config.acrossTriggersEnabled
               ? [
@@ -569,67 +783,37 @@ export function createNodeMenu(
                   },
                 ]
               : []),
+          ] as Field[])
+        : []),
+      ...(config.continuousEnabled
+        ? [
             {
-              key: `${key}-continuousEnabled`,
-              label: `${labelPrefix} continuously`,
-              kind: "checkbox" as const,
-              value: config.continuousEnabled,
-              onChange: (value: boolean) =>
-                updateMotionAndRender({ continuousEnabled: value }),
+              key: `${key}-continuousLoopSeconds`,
+              label: `${labelPrefix} continuous loop length (s)`,
+              kind: "range" as const,
+              value: config.continuousLoopSeconds,
+              min: 0.5,
+              max: 20,
+              step: 0.5,
+              indented: true,
+              onChange: (value: number) =>
+                updateMotion({ continuousLoopSeconds: value }),
             },
-            ...(config.continuousEnabled
-              ? [
-                  {
-                    key: `${key}-continuousLoopSeconds`,
-                    label: `${labelPrefix} continuous loop length (s)`,
-                    kind: "range" as const,
-                    value: config.continuousLoopSeconds,
-                    min: 0.5,
-                    max: 20,
-                    step: 0.5,
-                    indented: true,
-                    onChange: (value: number) =>
-                      updateMotion({ continuousLoopSeconds: value }),
-                  },
-                ]
-              : []),
+          ]
+        : []),
+      ...wanderFields,
+      ...(anyCurveDomainEnabled
+        ? [
             {
-              key: `${key}-useWander`,
-              label: `${labelPrefix} use wander`,
-              kind: "checkbox" as const,
-              value: config.useWander,
-              onChange: (value: boolean) =>
-                updateMotionAndRender({ useWander: value }),
+              key: `${key}-curve`,
+              label: `${labelPrefix} curve`,
+              kind: "automation" as const,
+              points: config.curvePoints,
+              onChange: (points: AutomationPoint[]) =>
+                updateMotion({ curvePoints: points }),
             },
-            ...(config.useWander
-              ? [
-                  {
-                    key: `${key}-wanderSpeed`,
-                    label: `${labelPrefix} wander speed`,
-                    kind: "range" as const,
-                    value: config.wanderSpeed,
-                    min: 0,
-                    max: 1,
-                    step: 0.01,
-                    indented: true,
-                    onChange: (value: number) =>
-                      updateMotion({ wanderSpeed: value }),
-                  },
-                ]
-              : []),
-            ...(anyCurveDomainEnabled
-              ? [
-                  {
-                    key: `${key}-curve`,
-                    label: `${labelPrefix} curve`,
-                    kind: "automation" as const,
-                    points: config.curvePoints,
-                    onChange: (points: AutomationPoint[]) =>
-                      updateMotion({ curvePoints: points }),
-                  },
-                ]
-              : []),
-          ]),
+          ]
+        : []),
     ];
   }
 
@@ -968,7 +1152,6 @@ export function createNodeMenu(
         valueStep: 0.01,
         fixedValueMin: 0.5,
         fixedValueMax: 2.0,
-        showFireOption: false,
       }),
     );
     renderFields(

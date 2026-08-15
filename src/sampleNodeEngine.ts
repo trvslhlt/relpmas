@@ -844,7 +844,15 @@ export class SampleNodeEngine {
    * formula, and so on for any combination -- rangeAtTime clamps the
    * final composed start/length hard against buffer bounds regardless,
    * so exceeding [min,max] here from summing several at once is safe.
-   * Zero enabled contributions (and useFixed off) returns `fallback`. */
+   * Zero enabled contributions (and useFixed off) returns `fallback`.
+   *
+   * useFixed + useWander together is the one exception to "useFixed
+   * short-circuits everything else": wander is a noise source layered on
+   * whatever mode a control is in, not a mode of its own to pick between
+   * (see MotionConfig's own doc comment on useWander) -- so a fixed
+   * value still wobbles by wander's own current deviation from its
+   * range's center, rather than wander being silently ignored just
+   * because useFixed happens to also be on. */
   private evaluateMotion(
     config: MotionConfig,
     wander: WanderState | null,
@@ -855,7 +863,13 @@ export class SampleNodeEngine {
     triggerIndex: number,
     fallback: number,
   ): number {
-    if (config.useFixed) return config.fixedValue;
+    if (config.useFixed) {
+      if (config.useWander && wander) {
+        const center = (config.min + config.max) / 2;
+        return config.fixedValue + (wander.current - center);
+      }
+      return config.fixedValue;
+    }
 
     const range = { min: config.min, max: config.max };
     const contributions: number[] = [];

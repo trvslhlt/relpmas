@@ -429,3 +429,110 @@ input[type="file"] {
 .node-menu-section-body {
   padding-top: 0.5rem;
 }
+
+.node-menu-config-button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 0.1rem 0.3rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.node-menu-config-button:hover {
+  color: var(--text);
+}
+
+/* bruit-kit's effectsFields.ts (its own param-range popup) references
+ * these class names but ships no CSS of its own -- each host app
+ * supplies its own, same convention as .panel-field above. Shared here
+ * with the motion config grid's popup (see openMotionConfigModal in
+ * nodeMenu.ts) rather than each defining its own modal chrome. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.modal {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  min-width: 280px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.modal-close-button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.1rem 0.3rem;
+  cursor: pointer;
+}
+
+.modal-close-button:hover {
+  color: var(--text);
+}
+
+.modal-body {
+  padding: 1rem;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.motion-config-grid {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.motion-config-grid th,
+.motion-config-grid td {
+  padding: 0.4rem 0.75rem;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.motion-config-grid th[scope="row"] {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.motion-config-grid thead th,
+.motion-config-grid tr:first-child th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
