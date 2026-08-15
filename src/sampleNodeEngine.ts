@@ -554,7 +554,7 @@ export class SampleNodeEngine {
         direction,
         fadeMs: node.fadeMs,
         envelopeCurve: node.envelopeMotion.fireEnabled
-          ? node.envelopeMotion.curvePoints
+          ? node.envelopeMotion.fireCurvePoints
           : undefined,
         gain: envelopeGain,
         rateSemitones: 12 * Math.log2(rateMultiplier),
@@ -725,7 +725,7 @@ export class SampleNodeEngine {
       audio.envelopeContinuousLoop = startAutomationLoop(
         audio.envelopeGain.gain,
         this.audioContext,
-        () => this.nodes.get(id)?.envelopeMotion.curvePoints ?? [],
+        () => this.nodes.get(id)?.envelopeMotion.continuousCurvePoints ?? [],
         () => this.nodes.get(id)?.envelopeMotion.continuousLoopSeconds ?? 4,
         { min: node.envelopeMotion.min, max: node.envelopeMotion.max },
       );
@@ -808,7 +808,7 @@ export class SampleNodeEngine {
       direction,
       fadeMs: node.fadeMs,
       envelopeCurve: node.envelopeMotion.fireEnabled
-        ? node.envelopeMotion.curvePoints
+        ? node.envelopeMotion.fireCurvePoints
         : undefined,
       gain: envelopeGain,
       rateSemitones: 12 * Math.log2(rateMultiplier),
@@ -984,7 +984,7 @@ export class SampleNodeEngine {
     if (config.duringTriggerEnabled) {
       contributions.push(
         curvePositionAtElapsed(
-          config.curvePoints,
+          config.triggerCurvePoints,
           atTime - lastTriggerAt,
           triggerPeriodSeconds,
           range,
@@ -993,14 +993,14 @@ export class SampleNodeEngine {
     }
     if (config.fireEnabled) {
       contributions.push(
-        sampleCurveAt(config.curvePoints, burstPosition ?? 0, range),
+        sampleCurveAt(config.fireCurvePoints, burstPosition ?? 0, range),
       );
     }
     if (config.acrossTriggersEnabled) {
       const cycleLength = Math.max(1, Math.round(config.triggerCycleLength));
       contributions.push(
         sampleCurveAt(
-          config.curvePoints,
+          config.triggerCurvePoints,
           (triggerIndex % cycleLength) / cycleLength,
           range,
         ),
@@ -1009,7 +1009,7 @@ export class SampleNodeEngine {
     if (config.continuousEnabled) {
       contributions.push(
         curvePositionAtElapsed(
-          config.curvePoints,
+          config.continuousCurvePoints,
           atTime,
           config.continuousLoopSeconds,
           range,

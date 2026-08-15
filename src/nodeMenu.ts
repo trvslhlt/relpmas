@@ -620,17 +620,23 @@ export function createNodeMenu(
     document.body.appendChild(overlay);
   }
 
-  /** Builds the *value* fields for one of a node's three MotionConfig-
-   * driven controls (position/duration/rate) -- Fixed/Continuous/Trigger/
-   * Fire are turned on or off exclusively through the config grid modal
-   * now (see openMotionConfigModal), not here; this only ever renders
-   * the controls relevant to whatever ended up enabled, so an unused
-   * domain shows nothing at all rather than a checkbox. The one
-   * exception is `useWander`, which stays a checkbox here, ungated and
-   * unmoved -- it was never part of the grid (see openMotionConfigModal's
-   * own doc comment on why: it's orthogonal to Fixed/Continuous/Trigger/
-   * Fire, a noise source layered on top of whatever mode a row is
-   * already in, not a mode of its own to pick between). */
+  /** Builds the *value* fields for one of a node's four MotionConfig-
+   * driven controls (position/duration/rate/envelope) -- Fixed/
+   * Continuous/Trigger/Fire are turned on or off exclusively through the
+   * config grid modal now (see openMotionConfigModal), not here; this
+   * only ever renders the controls relevant to whatever ended up
+   * enabled, so an unused domain shows nothing at all rather than a
+   * checkbox. Each of Trigger/Continuous/Fire renders as its own field
+   * group ending in its own curve editor (triggerCurvePoints/
+   * continuousCurvePoints/fireCurvePoints) -- checking more than one in
+   * the grid shows more than one group here, each independently
+   * drawable rather than forced to share a single curve (see
+   * MotionConfig's own doc comment). The one exception to "grid-gated"
+   * is `useWander`, which stays a checkbox here, ungated and unmoved --
+   * it was never part of the grid (see openMotionConfigModal's own doc
+   * comment on why: it's orthogonal to Fixed/Continuous/Trigger/Fire, a
+   * noise source layered on top of whatever mode a row is already in,
+   * not a mode of its own to pick between). */
   function motionFields(
     node: SampleNode,
     key: "positionMotion" | "durationMotion" | "rateMotion" | "envelopeMotion",
@@ -683,11 +689,6 @@ export function createNodeMenu(
       render();
     };
 
-    const anyCurveDomainEnabled =
-      config.duringTriggerEnabled ||
-      config.fireEnabled ||
-      config.acrossTriggersEnabled ||
-      config.continuousEnabled;
     const triggerActive =
       config.duringTriggerEnabled || config.acrossTriggersEnabled;
 
@@ -764,6 +765,15 @@ export function createNodeMenu(
       // unchecked at once, which hid this whole block with no way back
       // short of reopening the grid). A select enforces that structurally
       // -- it always has a value.
+      //
+      // Each of Trigger/Continuous/Fire below is its own self-contained
+      // field group ending in its own curve editor -- not one shared
+      // curve at the bottom covering whichever domains happen to be on.
+      // Checking more than one (e.g. Trigger + Fire) still sums their
+      // contributions (evaluateMotion's own formula, unchanged), but
+      // each now reads its own independently-drawn shape instead of
+      // being forced to reuse the same curve for two conceptually
+      // different things -- see MotionConfig's own doc comment.
       ...(triggerActive
         ? ([
             {
@@ -798,14 +808,22 @@ export function createNodeMenu(
                   },
                 ]
               : []),
+            {
+              key: `${key}-triggerCurve`,
+              label: `${labelPrefix} trigger curve`,
+              kind: "automation" as const,
+              points: config.triggerCurvePoints,
+              onChange: (points: AutomationPoint[]) =>
+                updateMotion({ triggerCurvePoints: points }),
+            },
           ] as Field[])
         : []),
       ...(config.continuousEnabled
-        ? [
+        ? ([
             {
               key: `${key}-continuousLoopSeconds`,
               label: `${labelPrefix} continuous loop length (s)`,
-              kind: "range" as const,
+              kind: "range",
               value: config.continuousLoopSeconds,
               min: 0.5,
               max: 20,
@@ -814,18 +832,26 @@ export function createNodeMenu(
               onChange: (value: number) =>
                 updateMotion({ continuousLoopSeconds: value }),
             },
-          ]
+            {
+              key: `${key}-continuousCurve`,
+              label: `${labelPrefix} continuous curve`,
+              kind: "automation",
+              points: config.continuousCurvePoints,
+              onChange: (points: AutomationPoint[]) =>
+                updateMotion({ continuousCurvePoints: points }),
+            },
+          ] as Field[])
         : []),
       ...wanderFields,
-      ...(anyCurveDomainEnabled
+      ...(config.fireEnabled
         ? [
             {
-              key: `${key}-curve`,
-              label: `${labelPrefix} curve`,
+              key: `${key}-fireCurve`,
+              label: `${labelPrefix} fire curve`,
               kind: "automation" as const,
-              points: config.curvePoints,
+              points: config.fireCurvePoints,
               onChange: (points: AutomationPoint[]) =>
-                updateMotion({ curvePoints: points }),
+                updateMotion({ fireCurvePoints: points }),
             },
           ]
         : []),

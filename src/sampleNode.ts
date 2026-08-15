@@ -71,26 +71,29 @@ export type FiringPattern =
  * vocabulary (see the PLAN's "Core model"): a trigger starts a node's
  * cycle, a fire is one actual sample playback within it.
  *
- * - `duringTriggerEnabled`: samples `curvePoints` at (time elapsed since
- *   the node's own *last trigger*) / triggerPeriodSeconds -- restarts at
- *   curve position 0 on every trigger (manual, loop, or graph-cascaded
- *   alike) and completes exactly as the next one is due, same
- *   trigger-relative timing sweepRoute/lfoRoute's own ramps use. For
- *   something evaluated only once per fire (rate, duration), this is
+ * - `duringTriggerEnabled`: samples `triggerCurvePoints` at (time elapsed
+ *   since the node's own *last trigger*) / triggerPeriodSeconds --
+ *   restarts at curve position 0 on every trigger (manual, loop, or
+ *   graph-cascaded alike) and completes exactly as the next one is due,
+ *   same trigger-relative timing sweepRoute/lfoRoute's own ramps use.
+ *   For something evaluated only once per fire (rate, duration), this is
  *   only actually visible across a multi-fire burst spread out over
  *   real time -- a single fire happens at essentially the trigger's own
  *   start, so elapsed time there is always ~0 (see fireEnabled below and
  *   acrossTriggersEnabled for the two ways to get real movement out of a
  *   single-fire node instead).
- * - `fireEnabled`: samples `curvePoints` at this specific fire's own
+ * - `fireEnabled`: samples `fireCurvePoints` at this specific fire's own
  *   position within the current firing burst (0 for a single fire, or
  *   the first of a multi-fire burst; 1 for the burst's last fire) --
  *   baked into that one voice at the instant it fires, never
  *   re-evaluated during its own playback. Same "always ~0 for a single
  *   fire" caveat as duringTriggerEnabled, for the same reason (a single
  *   fire has no burst to have a position within).
- * - `acrossTriggersEnabled`: samples `curvePoints` at (a persistent count
- *   of how many triggers this node has had so far, wrapped modulo
+ * - `acrossTriggersEnabled`: samples the *same* `triggerCurvePoints`
+ *   duringTriggerEnabled uses (never both active at once -- see
+ *   nodeMenu.ts's mutually-exclusive "trigger mode" select, so there's
+ *   nothing to keep separate between them) at (a persistent count of how
+ *   many triggers this node has had so far, wrapped modulo
  *   `triggerCycleLength`) / `triggerCycleLength` -- advances exactly one
  *   step *per trigger event*, not per unit of elapsed time, so it stays
  *   in sync with the pattern's own cadence even if that cadence isn't
@@ -98,32 +101,44 @@ export type FiringPattern =
  *   varying gaps). This is what makes a single-fire node's value
  *   actually move from one trigger to the next, unlike
  *   duringTriggerEnabled/fireEnabled above.
- * - `continuousEnabled`: samples `curvePoints` against a free-running
- *   clock, looped over its own `continuousLoopSeconds`, entirely
- *   independent of triggers or fires -- never resets, keeps looping
- *   whether or not anything is actually playing.
+ * - `continuousEnabled`: samples `continuousCurvePoints` against a
+ *   free-running clock, looped over its own `continuousLoopSeconds`,
+ *   entirely independent of triggers or fires -- never resets, keeps
+ *   looping whether or not anything is actually playing.
  * - `useWander`: bruit-kit's driftMath retarget-then-glide random walk,
  *   at `wanderSpeed`, continuous and trigger-independent like
  *   `continuousEnabled` but random rather than a drawn shape.
  *
- * The four curve-based toggles share one `curvePoints` shape (checking
- * more than one samples the *same* curve several different ways, rather
- * than needing separately-drawn curves) -- only shown in the UI once at
- * least one of them is checked (see nodeMenu.ts's motionFields).
- * `fallback` is when nothing is enabled at all: baked into the caller,
- * not stored here (range start for position, full range length for
- * duration -- see rangeAtTime). */
+ * Trigger/Continuous/Fire each get their *own* curve
+ * (triggerCurvePoints/continuousCurvePoints/fireCurvePoints) rather than
+ * sharing one -- checking more than one at once (e.g. Trigger + Fire)
+ * still sums their contributions (evaluateMotion's own summing formula
+ * is unchanged), but each now reads its own independently-drawn shape
+ * instead of being forced to reuse the same curve for two conceptually
+ * different things (how a value moves across a trigger's own timeline
+ * vs. how it varies fire to fire within one). nodeMenu.ts's
+ * motionFields renders each active domain as its own field group with
+ * its own curve editor, only for whichever domains are actually
+ * checked. `fallback` is when nothing is enabled at all: baked into the
+ * caller, not stored here (range start for position, full range length
+ * for duration -- see rangeAtTime). */
 export interface MotionConfig {
   useFixed: boolean;
   fixedValue: number;
 
-  curvePoints: AutomationPoint[];
+  /** Shared between duringTriggerEnabled and acrossTriggersEnabled --
+   * see acrossTriggersEnabled's own doc comment for why one curve is
+   * enough for both (they're mutually exclusive, never simultaneously
+   * active). */
+  triggerCurvePoints: AutomationPoint[];
   duringTriggerEnabled: boolean;
+  fireCurvePoints: AutomationPoint[];
   fireEnabled: boolean;
   acrossTriggersEnabled: boolean;
   /** Only meaningful while acrossTriggersEnabled -- how many triggers one
    * full lap of the curve spans before wrapping back to position 0. */
   triggerCycleLength: number;
+  continuousCurvePoints: AutomationPoint[];
   continuousEnabled: boolean;
   /** Only meaningful while continuousEnabled -- independent of
    * triggerPeriodSeconds on purpose (see continuousEnabled's own doc
@@ -136,6 +151,14 @@ export interface MotionConfig {
 
   min: number;
   max: number;
+}
+
+/** Cloned per call -- never a shared array reference, same reasoning as
+ * ascendingCurve's own doc comment (a curve is meant to be freely
+ * replaceable per domain without any risk of one's edit reaching
+ * another's). */
+function clonePoints(points: AutomationPoint[]): AutomationPoint[] {
+  return points.map((p) => ({ ...p }));
 }
 
 export function createMotionConfig(
@@ -152,7 +175,12 @@ export function createMotionConfig(
   return {
     useFixed: false,
     fixedValue,
-    curvePoints,
+    // All three start from the same shape (same default appearance as
+    // before this split existed) but as independent arrays, free to
+    // diverge the moment any one of them is actually edited.
+    triggerCurvePoints: clonePoints(curvePoints),
+    fireCurvePoints: clonePoints(curvePoints),
+    continuousCurvePoints: clonePoints(curvePoints),
     duringTriggerEnabled: false,
     fireEnabled: false,
     acrossTriggersEnabled: false,
@@ -193,7 +221,9 @@ function createRateMotion(): MotionConfig {
   return {
     useFixed: true,
     fixedValue: 1,
-    curvePoints: ascendingCurve(),
+    triggerCurvePoints: ascendingCurve(),
+    fireCurvePoints: ascendingCurve(),
+    continuousCurvePoints: ascendingCurve(),
     duringTriggerEnabled: false,
     fireEnabled: false,
     acrossTriggersEnabled: false,
@@ -233,7 +263,9 @@ function createEnvelopeMotion(): MotionConfig {
   return {
     useFixed: true,
     fixedValue: 1,
-    curvePoints: flatCurve(),
+    triggerCurvePoints: flatCurve(),
+    fireCurvePoints: flatCurve(),
+    continuousCurvePoints: flatCurve(),
     duringTriggerEnabled: false,
     fireEnabled: false,
     acrossTriggersEnabled: false,
