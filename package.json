@@ -4,6 +4,9 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "sync-worklets": "cp node_modules/bruit-kit/dist/sources/directional-sample-processor.js node_modules/bruit-kit/dist/audio/pitch-shift-processor.js node_modules/bruit-kit/dist/audio/sample-rate-reducer-processor.js public/worklets/",
+    "predev": "npm run sync-worklets",
+    "prebuild": "npm run sync-worklets",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",

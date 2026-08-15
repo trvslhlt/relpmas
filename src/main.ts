@@ -13,7 +13,12 @@ import { unlockAudioContext } from "./audioContext";
 import { MasterBus } from "./masterBus";
 import { createNodeMenu } from "./nodeMenu";
 import { createPatchGraphView } from "./patchGraph";
-import { createSampleNode, wrapFraction, wrappedLength } from "./sampleNode";
+import {
+  createSampleNode,
+  duplicateSampleNode,
+  wrapFraction,
+  wrappedLength,
+} from "./sampleNode";
 import { SampleNodeEngine } from "./sampleNodeEngine";
 
 const unlockEl = document.querySelector<HTMLDivElement>("#unlock")!;
@@ -21,6 +26,8 @@ const appEl = document.querySelector<HTMLDivElement>("#app")!;
 const fileInputEl = document.querySelector<HTMLInputElement>("#file-input")!;
 const waveformEl = document.querySelector<HTMLDivElement>("#waveform")!;
 const addNodeButtonEl = document.querySelector<HTMLButtonElement>("#add-node")!;
+const duplicateNodeButtonEl =
+  document.querySelector<HTMLButtonElement>("#duplicate-node")!;
 const removeNodeButtonEl =
   document.querySelector<HTMLButtonElement>("#remove-node")!;
 const fireNodeButtonEl =
@@ -247,6 +254,19 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
   addNodeButtonEl.addEventListener("click", async () => {
     const color = NODE_COLORS[engine.listNodes().length % NODE_COLORS.length];
     const node = createSampleNode(color);
+    await engine.addNode(node);
+    selectedId = node.id;
+    syncWaveformEntries();
+    syncNodeList();
+    syncPatchGraph();
+  });
+
+  duplicateNodeButtonEl.addEventListener("click", async () => {
+    if (!selectedId) return;
+    const source = engine.getNode(selectedId);
+    if (!source) return;
+    const color = NODE_COLORS[engine.listNodes().length % NODE_COLORS.length];
+    const node = duplicateSampleNode(source, color);
     await engine.addNode(node);
     selectedId = node.id;
     syncWaveformEntries();

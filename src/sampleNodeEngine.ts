@@ -1,4 +1,5 @@
 import {
+  type AutomationLoopHandle,
   type BuiltEffectsChain,
   DRIFT_TICK_MS,
   type EffectSpec,
@@ -10,6 +11,7 @@ import {
   retargetDelayMsFor,
   sampleCurveAt,
   scheduleAutomation,
+  startAutomationLoop,
 } from "bruit-kit/audio";
 import { DirectionalSamplePlayer } from "bruit-kit/sources";
 import type { WaveformRange } from "bruit-kit/ui";
@@ -72,16 +74,30 @@ interface NodeRuntime {
   positionWander: WanderState | null;
   durationWander: WanderState | null;
   rateWander: WanderState | null;
+  envelopeWander: WanderState | null;
   liveRange: WaveformRange;
 }
 
 /** A node's own audio path: its dedicated DirectionalSamplePlayer (voices
  * fire through this, not a shared one -- see the class doc below for why
- * each node needs its own instance) -> its own effect chain -> the shared
- * mix bus. */
+ * each node needs its own instance) -> envelopeGain -> its own effect
+ * chain -> the shared mix bus. envelopeGain is a permanent junction (like
+ * MasterBus's own stable outputGain) whose identity never changes across
+ * an effect-chain rebuild -- only its downstream connection (to whatever
+ * the current chain.input is) and its own gain automation change; see
+ * setNodeEffects and reconcileEnvelopeContinuous. It exists specifically
+ * for envelopeMotion's Continuous mode (see SampleNode.envelopeMotion's
+ * own doc comment) -- Trigger's baked-per-fire gain and Fire's per-sample
+ * shape both go straight into playVoice's own gain/envelopeCurve options
+ * instead, since envelopeGain is shared across every voice from this
+ * player and can't express "this one fire is louder than that one." */
 interface NodeAudio {
   player: DirectionalSamplePlayer;
+  envelopeGain: GainNode;
   chain: BuiltEffectsChain;
+  /** Non-null only while envelopeMotion.continuousEnabled is on for this
+   * node -- see reconcileEnvelopeContinuous. */
+  envelopeContinuousLoop: AutomationLoopHandle | null;
   /** Lazily created the first time this node's lfoRoute is enabled --
    * see reconcileLfoConnection. */
   modulator: TriggerableModulator | null;
@@ -113,6 +129,17 @@ interface NodeAudio {
  * ceiling against the same formula summing unexpectedly high. */
 function clampRateMultiplier(value: number): number {
   return Math.min(100, Math.max(0.01, value));
+}
+
+/** Floors a per-fire baked envelope gain at 0 (unlike rate, a gain of
+ * exactly 0 -- or briefly negative from evaluateMotion's own summing
+ * formula -- is a perfectly valid, silent-but-not-pathological result,
+ * not a NaN risk the way a non-positive rate is) and caps it well above
+ * envelopeMotion's own default max (1.5) as a generous but finite
+ * backstop against the same formula summing unexpectedly high with
+ * several domains stacked at once. */
+function clampEnvelopeGain(value: number): number {
+  return Math.min(4, Math.max(0, value));
 }
 
 /** Owns the loaded buffer, every SampleNode, and the single shared
@@ -229,21 +256,27 @@ export class SampleNodeEngine {
       positionWander: null,
       durationWander: null,
       rateWander: null,
+      envelopeWander: null,
       liveRange: { ...node.range },
     });
 
     const player = new DirectionalSamplePlayer(this.audioContext);
     await player.init();
     if (this.buffer) await player.loadSample(this.buffer);
+    const envelopeGain = this.audioContext.createGain();
     const chain = buildEffectsChain(this.audioContext, node.effects);
-    player.connect(chain.input);
+    player.connect(envelopeGain);
+    envelopeGain.connect(chain.input);
     chain.output.connect(this.mixBus);
     this.audio.set(node.id, {
       player,
+      envelopeGain,
       chain,
+      envelopeContinuousLoop: null,
       modulator: null,
       modulatorConnectedTo: null,
     });
+    this.reconcileEnvelopeContinuous(node.id);
   }
 
   removeNode(id: string): void {
@@ -252,6 +285,8 @@ export class SampleNodeEngine {
     const audio = this.audio.get(id);
     if (audio) {
       audio.player.panic();
+      audio.envelopeContinuousLoop?.stop();
+      audio.envelopeGain.disconnect();
       audio.chain.dispose();
       // Otherwise the modulator's oscillator (once created) runs forever
       // -- a stopped OscillatorNode can't restart, so this is only safe
@@ -274,10 +309,10 @@ export class SampleNodeEngine {
     const audio = this.audio.get(id);
     if (!node || !audio) return;
     node.effects = effects;
-    audio.player.output.disconnect(audio.chain.input);
+    audio.envelopeGain.disconnect(audio.chain.input);
     audio.chain.dispose();
     const chain = buildEffectsChain(this.audioContext, effects);
-    audio.player.connect(chain.input);
+    audio.envelopeGain.connect(chain.input);
     chain.output.connect(this.mixBus);
     audio.chain = chain;
     // The rebuilt chain's params are entirely new AudioParam instances --
@@ -333,6 +368,14 @@ export class SampleNodeEngine {
     const node = this.nodes.get(id);
     if (!node) return;
     Object.assign(node, patch);
+    // Continuous mode is the one envelopeMotion domain with a live side
+    // effect outside the plain data model (an ongoing AudioParam
+    // automation loop) -- every other field on every other MotionConfig
+    // is pure data, read fresh next time it's needed, so only this one
+    // patch key needs a reconcile call here.
+    if (patch.envelopeMotion !== undefined) {
+      this.reconcileEnvelopeContinuous(id);
+    }
   }
 
   isArmed(id: string): boolean {
@@ -498,12 +541,22 @@ export class SampleNodeEngine {
           1,
         ),
       );
+      const envelopeGain = this.computeEnvelopeGain(
+        node,
+        runtime,
+        fireTime,
+        burstPosition,
+        triggerIndex,
+      );
       audio.player.playVoice({
         startFraction: range.start,
         endFraction: range.end,
         direction,
         fadeMs: node.fadeMs,
-        envelopeCurve: node.envelopeCurve,
+        envelopeCurve: node.envelopeMotion.fireEnabled
+          ? node.envelopeMotion.curvePoints
+          : undefined,
+        gain: envelopeGain,
         rateSemitones: 12 * Math.log2(rateMultiplier),
         time: fireTime,
       });
@@ -647,6 +700,48 @@ export class SampleNodeEngine {
     audio.modulatorConnectedTo = target;
   }
 
+  /** Starts, restarts, or stops envelopeMotion's Continuous automation
+   * loop on this node's own envelopeGain -- called from addNode (initial
+   * state) and updateNode (any subsequent envelopeMotion edit). Always
+   * stops whatever loop is currently running first, then starts a fresh
+   * one if continuousEnabled is on: unlike curvePoints/
+   * continuousLoopSeconds (re-read live every cycle by
+   * startAutomationLoop's own getter callbacks, so those two take effect
+   * without a restart), min/max are captured as a fixed valueRange
+   * snapshot when the loop starts, so an edit to either only actually
+   * takes effect via this restart. Cheap and click-free either way --
+   * scheduleAutomation's own cancelAndHoldAtTime anchors the new curve at
+   * wherever the old one actually was, not a hard jump (see its own doc
+   * comment). No-op (loop left null) while useFixed is on, or while
+   * neither useFixed nor continuousEnabled is -- Continuous is mutually
+   * exclusive with Fixed same as every other MotionConfig here (see
+   * nodeMenu.ts's own grid). */
+  private reconcileEnvelopeContinuous(id: string): void {
+    const node = this.nodes.get(id);
+    const audio = this.audio.get(id);
+    if (!node || !audio) return;
+    audio.envelopeContinuousLoop?.stop();
+    if (node.envelopeMotion.continuousEnabled) {
+      audio.envelopeContinuousLoop = startAutomationLoop(
+        audio.envelopeGain.gain,
+        this.audioContext,
+        () => this.nodes.get(id)?.envelopeMotion.curvePoints ?? [],
+        () => this.nodes.get(id)?.envelopeMotion.continuousLoopSeconds ?? 4,
+        { min: node.envelopeMotion.min, max: node.envelopeMotion.max },
+      );
+    } else {
+      audio.envelopeContinuousLoop = null;
+      // stop() only clears the JS-side timeout -- any ramp segments the
+      // last tick already scheduled on the AudioParam itself can still
+      // be mid-flight up to continuousLoopSeconds in the future, so
+      // switching away from Continuous needs an explicit cancel back to
+      // unity rather than just leaving those to finish on their own.
+      const now = this.audioContext.currentTime;
+      audio.envelopeGain.gain.cancelScheduledValues(now);
+      audio.envelopeGain.gain.setValueAtTime(1, now);
+    }
+  }
+
   /** Updates the node's sweep route and immediately cancels any pending
    * automation on whatever it currently targets -- a sweep has no
    * persistent connection to reconcile (unlike the LFO's oscillator), but
@@ -700,12 +795,22 @@ export class SampleNodeEngine {
         1,
       ),
     );
+    const envelopeGain = this.computeEnvelopeGain(
+      node,
+      runtime,
+      this.audioContext.currentTime,
+      null,
+      runtime.triggerIndex,
+    );
     return audio.player.playVoice({
       startFraction: range.start,
       endFraction: range.end,
       direction,
       fadeMs: node.fadeMs,
-      envelopeCurve: node.envelopeCurve,
+      envelopeCurve: node.envelopeMotion.fireEnabled
+        ? node.envelopeMotion.curvePoints
+        : undefined,
+      gain: envelopeGain,
       rateSemitones: 12 * Math.log2(rateMultiplier),
     });
   }
@@ -921,6 +1026,44 @@ export class SampleNodeEngine {
     return sum - (contributions.length - 1) * center;
   }
 
+  /** The one per-fire scalar out of envelopeMotion's four modes --
+   * "Trigger" (during/across), baked once via evaluateMotion exactly
+   * like Rate's own during/across, plus useWander/useFixed's ordinary
+   * evaluateMotion behavior on top. Continuous and Fire are deliberately
+   * excluded here (forced off on a local copy of the config) since they
+   * reach the final sound through entirely different paths -- Continuous
+   * via envelopeGain's own ongoing AudioParam automation
+   * (reconcileEnvelopeContinuous), Fire via a per-voice lookup table sent
+   * straight to playVoice's own envelopeCurve option (see trigger()/
+   * fireNow()) -- summing either into this baked scalar too would double
+   * them up. Returns 1 (neutral) when neither useFixed nor during/across
+   * is on, same fallback convention every other MotionConfig call uses. */
+  private computeEnvelopeGain(
+    node: SampleNode,
+    runtime: NodeRuntime,
+    atTime: number,
+    burstPosition: number | null,
+    triggerIndex: number,
+  ): number {
+    const bakedConfig: MotionConfig = {
+      ...node.envelopeMotion,
+      continuousEnabled: false,
+      fireEnabled: false,
+    };
+    return clampEnvelopeGain(
+      this.evaluateMotion(
+        bakedConfig,
+        runtime.envelopeWander,
+        atTime,
+        runtime.lastTriggerAt,
+        node.triggerPeriodSeconds,
+        burstPosition,
+        triggerIndex,
+        1,
+      ),
+    );
+  }
+
   /** Advances every armed node's range motion and due loop triggers.
    * Range-motion bookkeeping (wander retarget/glide) mirrors
    * grid-sequencer's own driftEngine.ts pattern, built on the same
@@ -934,6 +1077,7 @@ export class SampleNodeEngine {
       this.advanceWander(node.positionMotion, "positionWander", runtime);
       this.advanceWander(node.durationMotion, "durationWander", runtime);
       this.advanceWander(node.rateMotion, "rateWander", runtime);
+      this.advanceWander(node.envelopeMotion, "envelopeWander", runtime);
 
       const nextRange = this.rangeAtTime(node, runtime, now);
       if (
@@ -958,7 +1102,7 @@ export class SampleNodeEngine {
 
   private advanceWander(
     config: MotionConfig,
-    key: "positionWander" | "durationWander" | "rateWander",
+    key: "positionWander" | "durationWander" | "rateWander" | "envelopeWander",
     runtime: NodeRuntime,
   ): void {
     if (!config.useWander) {

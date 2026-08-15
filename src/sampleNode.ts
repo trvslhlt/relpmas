@@ -207,6 +207,46 @@ function createRateMotion(): MotionConfig {
   };
 }
 
+/** A flat line at 1 the whole way -- unlike ascendingCurve (a deliberate
+ * sweep to opt into), this is a true no-op: every one of envelopeMotion's
+ * curve-sampling modes (Continuous's automation loop, Trigger's baked
+ * during/across, Fire's per-sample worklet table) reads 1 everywhere,
+ * identical to no envelope at all. Used as envelopeMotion's own default
+ * curve so switching *into* any of those modes without having drawn
+ * anything yet doesn't silently change how a node sounds. */
+function flatCurve(): AutomationPoint[] {
+  return [
+    { position: 0, value: 1 },
+    { position: 1, value: 1 },
+  ];
+}
+
+/** Default envelopeMotion: fixed at 1.0 ("acts like gain" at unity, see
+ * SampleNode.envelopeMotion's own doc comment), same
+ * "no meaningful not-moving fallback" reasoning as createRateMotion --
+ * starts useFixed on rather than createMotionConfig's own all-off
+ * default. min/max (0..1.5) bounds Continuous/Trigger's baked-gain
+ * range; a modest headroom above 1 for an occasional swell, not a wide
+ * excursion the way rate's own 0.5..2.0 needs for audible pitch/speed
+ * change. */
+function createEnvelopeMotion(): MotionConfig {
+  return {
+    useFixed: true,
+    fixedValue: 1,
+    curvePoints: flatCurve(),
+    duringTriggerEnabled: false,
+    fireEnabled: false,
+    acrossTriggersEnabled: false,
+    triggerCycleLength: 8,
+    continuousEnabled: false,
+    continuousLoopSeconds: 4,
+    useWander: false,
+    wanderSpeed: 0.5,
+    min: 0,
+    max: 1.5,
+  };
+}
+
 /** A sample node's authored, static configuration -- its live state (which
  * way `alternating` fires next, its current moved range, in-flight
  * timers, armed/disarmed) lives in SampleNodeEngine, keyed by id, not
@@ -229,23 +269,36 @@ export interface SampleNode {
    * to a plain fixed 1.0 (see createRateMotion). */
   rateMotion: MotionConfig;
   /** Declick fade in/out applied at every fire's own start/end -- fast,
-   * fixed, and independent of envelopeCurve below (see its own doc
+   * fixed, and independent of envelopeMotion below (see its own doc
    * comment on how the two combine: multiplied together, not one
    * replacing the other). */
   fadeMs: number;
-  /** Amplitude shape across each fire's own span, sampled by elapsed
-   * fraction (0 at a fire's first frame, 1 at its last) -- the same
-   * AutomationPoint[] curve shape used everywhere else in this app
-   * (intervalCurve, the three MotionConfigs' curvePoints, sweep/lfo
-   * routes), drawn with the same editor. Defaults to a flat line at 1
-   * (createSampleNode's own default), which combined with fadeMs
-   * reproduces exactly the declick-only shape every fire had before this
-   * field existed -- turned into anything else (a pluck, a swell, a
-   * tremolo-like ripple) by drawing a different curve, entirely opt-in.
-   * See DirectionalSamplePlayer.playVoice's own envelopeCurve doc comment
-   * for how it's actually applied (a lookup table built once per fire on
-   * the main thread, not resampled by the worklet itself). */
-  envelopeCurve: AutomationPoint[];
+  /** A 4th MotionConfig, alongside position/duration/rate, but each of
+   * its four grid categories (see MOTION_ROWS in nodeMenu.ts) means
+   * something genuinely different here rather than reusing
+   * evaluateMotion's generic contribution-summing uniformly:
+   * - `useFixed`: literally acts as a plain gain multiplier (fixedValue),
+   *   same as any other MotionConfig's Fixed mode -- no shape at all.
+   * - `continuousEnabled`: a real, ongoing AudioParam automation loop on
+   *   this node's own envelopeGain (see SampleNodeEngine's own doc
+   *   comment on it) -- a background swell/tremolo independent of
+   *   triggers or fires, never baked into a single number. Bypasses
+   *   evaluateMotion entirely.
+   * - `duringTriggerEnabled`/`acrossTriggersEnabled` ("Trigger" in the
+   *   grid): baked once per fire via evaluateMotion, exactly like Rate's
+   *   own during/across -- a per-fire gain level, not a shape.
+   * - `fireEnabled` ("Fire"): the one mode that keeps a genuine per-
+   *   sample-varying shape across that one fire's own playback (today's
+   *   original envelope behavior) -- curvePoints sent to
+   *   DirectionalSamplePlayer.playVoice's own envelopeCurve option, a
+   *   lookup table built once per fire and sampled by the worklet itself
+   *   sample by sample, not baked to one number the way every other
+   *   MotionConfig's fireEnabled is.
+   * `useWander` still layers on top of whichever of the above is active,
+   * same orthogonal "noise source" role it plays for position/duration/
+   * rate -- see SampleNodeEngine.trigger()/fireNow() for exactly how
+   * these four combine into one fire's own final gain. */
+  envelopeMotion: MotionConfig;
 
   armMode: ArmMode;
   triggerPeriodSeconds: number;
@@ -367,17 +420,17 @@ export function createSampleNode(color: string): SampleNode {
     id,
     label: id,
     color,
-    range: { start: 0.1, end: 0.5 },
+    // 1/20th of the track (0.05, a plain fraction -- always exactly this
+    // regardless of the buffer's own actual duration, unlike a fixed
+    // seconds value which would need the buffer's length on hand at
+    // creation time). A smaller, more workable starting point than the
+    // old 0.4-length default -- easy to nudge from here rather than
+    // starting nearly half the track wide.
+    range: { start: 0.1, end: 0.15 },
     direction: "forward",
     rateMotion: createRateMotion(),
     fadeMs: 4,
-    // Flat at 1 the whole way -- a no-op multiplier, so a fresh node's
-    // sound is unaffected until this curve is actually drawn into
-    // something else (see SampleNode.envelopeCurve's own doc comment).
-    envelopeCurve: [
-      { position: 0, value: 1 },
-      { position: 1, value: 1 },
-    ],
+    envelopeMotion: createEnvelopeMotion(),
 
     armMode: "manual",
     triggerPeriodSeconds: 0.5,
@@ -421,5 +474,27 @@ export function createSampleNode(color: string): SampleNode {
     effects: [],
     sweepRoute: createSweepRoute(),
     lfoRoute: createLfoRoute(),
+  };
+}
+
+/** Copies every authored field of `source` (range, all three
+ * MotionConfigs, firing pattern, envelope/interval curves, effects,
+ * sweep/lfo routes -- everything but id/label/color) into a new node,
+ * sharing nextId's own counter with createSampleNode so ids never
+ * collide between a fresh node and a duplicated one. structuredClone
+ * rather than a shallow spread: every nested piece (curvePoints arrays,
+ * effects' own paramRanges/drift records, ...) needs its own independent
+ * copy, not a reference shared with `source` -- editing the duplicate's
+ * curve later must never silently reach back into the original's. */
+export function duplicateSampleNode(
+  source: SampleNode,
+  color: string,
+): SampleNode {
+  const id = `node-${nextId++}`;
+  return {
+    ...structuredClone(source),
+    id,
+    label: `${source.label} copy`,
+    color,
   };
 }

@@ -422,20 +422,24 @@ export function createNodeMenu(
       seconds === null ? "Selection: --" : `Selection: ${seconds.toFixed(3)}s`;
   }
 
-  /** Which of a node's three MotionConfig-driven controls the config
-   * grid modal covers, in display order -- shared between the modal's
-   * own grid rows and nothing else (motionValueFields below reads
-   * showFire straight off node.id === "rateMotion" via its own call
-   * sites, same as it always did). `showFire: false` on rate mirrors the
-   * same `showFireOption: false` reasoning render() used to pass
-   * directly into motionFields (see its own removed doc comment: a
-   * single fire has no burst to sample fireEnabled's curve position
-   * from). */
+  /** Which of a node's four MotionConfig-driven controls the config grid
+   * modal covers, in display order -- shared between the modal's own
+   * grid rows and nothing else (motionValueFields below reads showFire
+   * straight off its own call sites, same as it always did). `showFire:
+   * false` on rate mirrors the same `showFireOption: false` reasoning
+   * render() used to pass directly into motionFields (see its own
+   * removed doc comment: a single fire has no burst to sample
+   * fireEnabled's curve position from). Envelope's own Fire mode means
+   * something different from the other three rows' (a genuine per-
+   * sample-varying shape, not a baked scalar -- see SampleNode.
+   * envelopeMotion's own doc comment), but the grid checkbox itself
+   * behaves identically either way: it's just "is Fire on for this row." */
   const MOTION_ROWS: {
-    key: "rateMotion" | "durationMotion" | "positionMotion";
+    key: "rateMotion" | "durationMotion" | "positionMotion" | "envelopeMotion";
     label: string;
     showFire: boolean;
   }[] = [
+    { key: "envelopeMotion", label: "Envelope", showFire: true },
     { key: "rateMotion", label: "Rate", showFire: false },
     { key: "durationMotion", label: "Duration", showFire: true },
     { key: "positionMotion", label: "Position", showFire: true },
@@ -471,6 +475,7 @@ export function createNodeMenu(
    * drafted configs get committed together via a single update() call. */
   function openMotionConfigModal(node: SampleNode): void {
     const draft: Record<(typeof MOTION_ROWS)[number]["key"], MotionConfig> = {
+      envelopeMotion: { ...node.envelopeMotion },
       rateMotion: { ...node.rateMotion },
       durationMotion: { ...node.durationMotion },
       positionMotion: { ...node.positionMotion },
@@ -601,6 +606,7 @@ export function createNodeMenu(
     okButton.textContent = "OK";
     okButton.addEventListener("click", () => {
       update({
+        envelopeMotion: draft.envelopeMotion,
         rateMotion: draft.rateMotion,
         durationMotion: draft.durationMotion,
         positionMotion: draft.positionMotion,
@@ -627,7 +633,7 @@ export function createNodeMenu(
    * already in, not a mode of its own to pick between). */
   function motionFields(
     node: SampleNode,
-    key: "positionMotion" | "durationMotion" | "rateMotion",
+    key: "positionMotion" | "durationMotion" | "rateMotion" | "envelopeMotion",
     labelPrefix: string,
     options: {
       /** UI slider bounds for min/max (and fixedValue, unless
@@ -1029,21 +1035,6 @@ export function createNodeMenu(
     ];
   }
 
-  /** One curve, no toggle -- see SampleNode.envelopeCurve's own doc
-   * comment for why an unmodified default is a safe, always-on no-op
-   * rather than needing an enable checkbox like sweep/lfo's routes. */
-  function envelopeFields(node: SampleNode): Field[] {
-    return [
-      {
-        key: "envelopeCurve",
-        label: "Envelope curve",
-        kind: "automation",
-        points: node.envelopeCurve,
-        onChange: (points) => update({ envelopeCurve: points }),
-      },
-    ];
-  }
-
   function firingFields(node: SampleNode): Field[] {
     return [
       {
@@ -1168,7 +1159,14 @@ export function createNodeMenu(
     ensureWaveform(node);
 
     renderFields(playbackFieldsContainer, playbackFields(node));
-    renderFields(envelopeSection.body, envelopeFields(node));
+    renderFields(
+      envelopeSection.body,
+      motionFields(node, "envelopeMotion", "Envelope", {
+        valueMin: 0,
+        valueMax: 1.5,
+        valueStep: 0.01,
+      }),
+    );
     renderFields(
       rateSection.body,
       motionFields(node, "rateMotion", "Rate", {

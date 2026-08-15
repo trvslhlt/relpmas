@@ -4,12 +4,22 @@
 //
 // Unlike granular-processor.js's grain cloud, this processor renders plain
 // contiguous reads of a loaded buffer -- one "voice" per playVoice call, each
-// reading forward or backward through its own [startFrame, endFrame] window
-// at its own rate, with both stereo channels advancing together. It's the
-// one piece of bruit-kit that can play audio backward: AudioBufferSourceNode
+// reading forward or backward through its own [startFraction, endFraction]
+// window at its own rate, with both stereo channels advancing together. It's
+// the one piece of bruit-kit that can play audio backward: AudioBufferSourceNode
 // (used by samplePlayer.ts) can't (Web Audio spec limitation -- no negative
 // playbackRate), and granular-processor.js's grain rate math is structurally
 // always positive too.
+//
+// startFraction/endFraction are directional, not a {lo,hi} bound: a voice
+// always reads the span from startFraction to endFraction going forward
+// (increasing index), wrapping past the buffer's end back to its start if
+// endFraction < startFraction -- a true circular fragment, not clamped at
+// the buffer boundary. `direction` picks which way playback actually reads
+// that same span (backward starts at endFraction and descends toward
+// startFraction, wrapping the other way). Buffer indexing is done modulo
+// frameCount every sample, so this one formula covers both the wrapped and
+// non-wrapped cases with no special-casing.
 
 class DirectionalSampleProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -49,6 +59,19 @@ class DirectionalSampleProcessor extends AudioWorkletProcessor {
           direction: msg.direction,
           fadeMs: msg.fadeMs,
           rateSemitones: msg.rateSemitones,
+          // A plain Float32Array lookup table built on the main thread
+          // (see DirectionalSamplePlayer.playVoice/buildEnvelopeTable) --
+          // this processor never does curve math of its own, just indexes
+          // into it. null means "no envelope," not "flat envelope at 1":
+          // render() skips the multiply entirely rather than looking up a
+          // table of all-1s, so the common case (no envelope) costs
+          // nothing extra per sample.
+          envelopeTable: msg.envelopeTable ?? null,
+          // A single flat multiplier, decided by the caller before the
+          // voice ever starts -- distinct from envelopeTable (a shape
+          // that varies sample to sample). See
+          // DirectionalSamplePlayer.playVoice's own gain doc comment.
+          gain: msg.gain ?? 1,
         });
         break;
       case "stopVoice":
@@ -73,9 +96,14 @@ class DirectionalSampleProcessor extends AudioWorkletProcessor {
   applyEvent(ev) {
     if (ev.type === "play") {
       if (!this.frameCount) return;
-      const lo = Math.min(ev.startFraction, ev.endFraction) * this.frameCount;
-      const hi = Math.max(ev.startFraction, ev.endFraction) * this.frameCount;
-      const spanFrames = Math.max(0, hi - lo);
+      const n = this.frameCount;
+      const startFrame = ev.startFraction * n;
+      const endFrame = ev.endFraction * n;
+      // Forward-wrap distance from start to end (always in [0, n)) -- this
+      // is what makes startFraction > endFraction mean "wrap through the
+      // buffer's end back to its start" instead of an unordered bound (see
+      // the module doc comment).
+      const spanFrames = (((endFrame - startFrame) % n) + n) % n;
       // Clamped away from 0 -- a runaway near-zero rate would make
       // totalFrames (spanFrames / rate) effectively infinite, hanging the
       // voice forever instead of just playing very slowly.
@@ -86,11 +114,13 @@ class DirectionalSampleProcessor extends AudioWorkletProcessor {
       );
       this.voices.push({
         id: ev.id,
-        pos: ev.direction === "backward" ? hi : lo,
+        pos: ev.direction === "backward" ? endFrame : startFrame,
         step: (ev.direction === "backward" ? -1 : 1) * rate,
         elapsed: 0,
         totalFrames: spanFrames / rate,
         fadeFrames,
+        envelopeTable: ev.envelopeTable,
+        gain: ev.gain ?? 1,
         stopping: false,
         stopGain: 1,
       });
@@ -108,6 +138,8 @@ class DirectionalSampleProcessor extends AudioWorkletProcessor {
     // of bruit-kit's steal/release fades (see envelope.ts's STEAL_FADE_MS).
     const stopReleaseFrames = Math.max(1, Math.round(0.005 * sampleRate));
 
+    const n = this.frameCount;
+
     for (let vIdx = this.voices.length - 1; vIdx >= 0; vIdx--) {
       const voice = this.voices[vIdx];
       let finished = false;
@@ -117,19 +149,21 @@ class DirectionalSampleProcessor extends AudioWorkletProcessor {
           finished = true;
           break;
         }
+        // Wrapped modulo n rather than stopped at the buffer's edge -- a
+        // voice's span can run past the buffer's end (or, reading
+        // backward, past its start) by design when startFraction/
+        // endFraction describe a wrapped fragment (see applyEvent). frac
+        // (the interpolation weight) is unaffected by wrapping since
+        // Math.floor(voice.pos) and voice.pos always differ by the same
+        // fractional amount regardless of any integer offset.
         const idx = Math.floor(voice.pos);
-        // Guards both ends: idx >= 0 is the one granular-processor.js's own
-        // interpolation doesn't need (its grain rate is always positive, so
-        // srcPos only ever climbs) but this processor does, since a
-        // backward voice's pos descends and can run past the buffer's start.
-        if (idx < 0 || idx + 1 >= this.frameCount) {
-          finished = true;
-          break;
-        }
-
+        const wrappedIdx = ((idx % n) + n) % n;
+        const nextIdx = (wrappedIdx + 1) % n;
         const frac = voice.pos - idx;
-        const l = this.left[idx] * (1 - frac) + this.left[idx + 1] * frac;
-        const r = this.right[idx] * (1 - frac) + this.right[idx + 1] * frac;
+        const l =
+          this.left[wrappedIdx] * (1 - frac) + this.left[nextIdx] * frac;
+        const r =
+          this.right[wrappedIdx] * (1 - frac) + this.right[nextIdx] * frac;
 
         const fadeIn =
           voice.fadeFrames > 0
@@ -139,6 +173,26 @@ class DirectionalSampleProcessor extends AudioWorkletProcessor {
         const fadeOut =
           voice.fadeFrames > 0 ? Math.min(1, remaining / voice.fadeFrames) : 1;
         let gain = Math.min(fadeIn, fadeOut);
+
+        // Independent of, and multiplied together with, fadeIn/fadeOut
+        // above -- fadeFrames is a fast fixed anti-click ramp at each end,
+        // this is a separately-authored amplitude shape across the whole
+        // voice (see DirectionalSamplePlayer.playVoice's own doc comment
+        // on envelopeCurve). voice.totalFrames > 0 is guaranteed here (a
+        // zero-span voice never gets pushed -- see applyEvent).
+        if (voice.envelopeTable) {
+          const table = voice.envelopeTable;
+          const envPos = voice.elapsed / voice.totalFrames;
+          const envIdx = Math.min(
+            table.length - 1,
+            Math.floor(envPos * (table.length - 1)),
+          );
+          gain *= table[envIdx];
+        }
+
+        // A flat multiplier decided once, before this voice started --
+        // see DirectionalSamplePlayer.playVoice's own gain doc comment.
+        gain *= voice.gain;
 
         if (voice.stopping) {
           voice.stopGain -= 1 / stopReleaseFrames;
