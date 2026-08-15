@@ -503,6 +503,7 @@ export class SampleNodeEngine {
         endFraction: range.end,
         direction,
         fadeMs: node.fadeMs,
+        envelopeCurve: node.envelopeCurve,
         rateSemitones: 12 * Math.log2(rateMultiplier),
         time: fireTime,
       });
@@ -704,6 +705,7 @@ export class SampleNodeEngine {
       endFraction: range.end,
       direction,
       fadeMs: node.fadeMs,
+      envelopeCurve: node.envelopeCurve,
       rateSemitones: 12 * Math.log2(rateMultiplier),
     });
   }

@@ -281,7 +281,7 @@ export function createNodeMenu(
   }
 
   const generalSection = createSection("General");
-  const playbackSection = createSection("Playback");
+  const envelopeSection = createSection("Envelope");
   const rateSection = createSection("Rate");
   const durationSection = createSection("Duration");
   const firingSection = createSection("Firing pattern");
@@ -295,7 +295,7 @@ export function createNodeMenu(
     waveformContainer,
     selectionDurationEl,
     generalSection.details,
-    playbackSection.details,
+    envelopeSection.details,
     rateSection.details,
     durationSection.details,
     firingSection.details,
@@ -365,6 +365,15 @@ export function createNodeMenu(
     triggerPeriodSnapButton,
   );
   generalSection.body.appendChild(triggerPeriodRow);
+
+  // Playback (Direction, Declick fade) merged into General, keeping
+  // General's own title -- a separate child container rather than
+  // rendering straight into generalSection.body, since renderFields
+  // resets its container's innerHTML on every call (see its own doc
+  // comment) and would otherwise wipe out triggerPeriodRow above, which
+  // is plain DOM appended once rather than a renderFields output.
+  const playbackFieldsContainer = document.createElement("div");
+  generalSection.body.appendChild(playbackFieldsContainer);
 
   let zoomableView: ReturnType<typeof createZoomableWaveformRangeView> | null =
     null;
@@ -1020,6 +1029,21 @@ export function createNodeMenu(
     ];
   }
 
+  /** One curve, no toggle -- see SampleNode.envelopeCurve's own doc
+   * comment for why an unmodified default is a safe, always-on no-op
+   * rather than needing an enable checkbox like sweep/lfo's routes. */
+  function envelopeFields(node: SampleNode): Field[] {
+    return [
+      {
+        key: "envelopeCurve",
+        label: "Envelope curve",
+        kind: "automation",
+        points: node.envelopeCurve,
+        onChange: (points) => update({ envelopeCurve: points }),
+      },
+    ];
+  }
+
   function firingFields(node: SampleNode): Field[] {
     return [
       {
@@ -1143,7 +1167,8 @@ export function createNodeMenu(
 
     ensureWaveform(node);
 
-    renderFields(playbackSection.body, playbackFields(node));
+    renderFields(playbackFieldsContainer, playbackFields(node));
+    renderFields(envelopeSection.body, envelopeFields(node));
     renderFields(
       rateSection.body,
       motionFields(node, "rateMotion", "Rate", {

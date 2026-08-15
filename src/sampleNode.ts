@@ -228,8 +228,24 @@ export interface SampleNode {
    * continuously, or random wander, any combination at once). Defaults
    * to a plain fixed 1.0 (see createRateMotion). */
   rateMotion: MotionConfig;
-  /** Declick fade in/out applied at every fire's own start/end. */
+  /** Declick fade in/out applied at every fire's own start/end -- fast,
+   * fixed, and independent of envelopeCurve below (see its own doc
+   * comment on how the two combine: multiplied together, not one
+   * replacing the other). */
   fadeMs: number;
+  /** Amplitude shape across each fire's own span, sampled by elapsed
+   * fraction (0 at a fire's first frame, 1 at its last) -- the same
+   * AutomationPoint[] curve shape used everywhere else in this app
+   * (intervalCurve, the three MotionConfigs' curvePoints, sweep/lfo
+   * routes), drawn with the same editor. Defaults to a flat line at 1
+   * (createSampleNode's own default), which combined with fadeMs
+   * reproduces exactly the declick-only shape every fire had before this
+   * field existed -- turned into anything else (a pluck, a swell, a
+   * tremolo-like ripple) by drawing a different curve, entirely opt-in.
+   * See DirectionalSamplePlayer.playVoice's own envelopeCurve doc comment
+   * for how it's actually applied (a lookup table built once per fire on
+   * the main thread, not resampled by the worklet itself). */
+  envelopeCurve: AutomationPoint[];
 
   armMode: ArmMode;
   triggerPeriodSeconds: number;
@@ -355,6 +371,13 @@ export function createSampleNode(color: string): SampleNode {
     direction: "forward",
     rateMotion: createRateMotion(),
     fadeMs: 4,
+    // Flat at 1 the whole way -- a no-op multiplier, so a fresh node's
+    // sound is unaffected until this curve is actually drawn into
+    // something else (see SampleNode.envelopeCurve's own doc comment).
+    envelopeCurve: [
+      { position: 0, value: 1 },
+      { position: 1, value: 1 },
+    ],
 
     armMode: "manual",
     triggerPeriodSeconds: 0.5,
