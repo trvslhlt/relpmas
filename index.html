@@ -10,11 +10,26 @@
     <h1>relpmas</h1>
     <p class="app-note">
       Load an audio file, then define sample nodes against it.
-      Right-click a node (on the waveform or in the list below) for its
+      Click a node (on the waveform or in the list below) for its
       params.
     </p>
     <div id="unlock"></div>
     <div id="app" class="app-layout" hidden>
+      <div id="record-widget" class="record-widget">
+        <span id="record-idle-label" class="record-idle-label">Record</span>
+        <span id="record-elapsed" class="record-elapsed" hidden></span>
+        <a
+          id="download-link"
+          class="record-download-link"
+          hidden
+          download
+        ></a>
+        <button
+          id="record-toggle-button"
+          class="record-toggle-button"
+          title="Record"
+        ></button>
+      </div>
       <div class="app-main">
         <section class="panel">
           <h2>Source</h2>
@@ -23,13 +38,41 @@
         </section>
 
         <section class="panel">
-          <h2>Sample nodes</h2>
-          <div class="node-toolbar">
-            <button id="add-node">Add node</button>
-            <button id="duplicate-node">Duplicate selected</button>
-            <button id="remove-node">Remove selected</button>
-            <button id="fire-node">Fire (immediate)</button>
-            <button id="trigger-node">Trigger (pattern)</button>
+          <div class="section-header-row">
+            <h2>Nodes</h2>
+            <div class="node-toolbar">
+              <button id="add-node" class="icon-button" title="Add node">
+                +
+              </button>
+              <button
+                id="duplicate-node"
+                class="icon-button"
+                title="Duplicate selected"
+              >
+                ⎘
+              </button>
+              <button
+                id="remove-node"
+                class="icon-button"
+                title="Remove selected"
+              >
+                ×
+              </button>
+              <button
+                id="fire-node"
+                class="icon-button"
+                title="Fire (immediate)"
+              >
+                ▶
+              </button>
+              <button
+                id="trigger-node"
+                class="icon-button"
+                title="Trigger (pattern)"
+              >
+                ⟳
+              </button>
+            </div>
           </div>
           <div id="node-list"></div>
         </section>
@@ -37,11 +80,6 @@
         <section class="panel">
           <h2>Master bus</h2>
           <div id="master-effects"></div>
-          <div class="node-toolbar">
-            <button id="record-button">Record</button>
-            <button id="stop-record-button" disabled>Stop</button>
-            <a id="download-link" hidden download>Download recording</a>
-          </div>
           <p class="app-note">
             If audio ever goes silent and stays silent (a feedback
             effect or extreme modulation setting can occasionally get

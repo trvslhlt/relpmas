@@ -61,6 +61,29 @@ h2 {
   border-bottom: 1px solid var(--border);
 }
 
+/* A section's own h2 plus a toolbar sharing one line -- the row itself
+ * carries the border/spacing h2 normally carries alone, and the h2
+ * inside it drops its own so the border doesn't double up. */
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.section-header-row h2 {
+  margin: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.section-header-row .node-toolbar {
+  margin-bottom: 0;
+}
+
 .app-note {
   color: var(--text-muted);
   font-size: 0.85rem;
@@ -99,6 +122,14 @@ button:hover:not(:disabled) {
 button:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.icon-button {
+  min-width: 2.2rem;
+  padding: 0.35rem 0.55rem;
+  font-size: 1rem;
+  line-height: 1;
+  text-align: center;
 }
 
 input[type="file"] {
@@ -535,4 +566,79 @@ input[type="file"] {
   font-weight: 600;
   font-size: 0.75rem;
   text-transform: uppercase;
+}
+
+/* Pinned to the viewport's own top-right corner (not the page layout's),
+ * so it stays reachable regardless of scroll position on a page this
+ * tall -- a single toggle button carries both record and stop, its own
+ * background color signaling which action a click performs next (green
+ * = idle, click to record; red = recording, click to stop), same
+ * pattern a video call's mute button uses. The button is the *last*
+ * child (rightmost, nearest the widget's own right-anchored edge) and
+ * the status text (idle label/elapsed/download link -- exactly one
+ * visible at a time) comes first, to its left -- so the button's own
+ * screen position never shifts as that text's width changes (e.g.
+ * "0:09" -> "0:10", or swapping to "Download"); only the text area
+ * grows or shrinks, on the side away from the button. */
+.record-widget {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.4rem 0.4rem 0.4rem 0.9rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.record-toggle-button {
+  width: 2.4rem;
+  height: 2.4rem;
+  min-width: 0;
+  border-radius: 50%;
+  border: none;
+  font-size: 0.9rem;
+  line-height: 1;
+  color: #fff;
+  padding: 0;
+}
+
+.record-toggle-button.is-idle {
+  background: #2ecc71;
+}
+
+.record-toggle-button.is-idle:hover {
+  background: #29b765;
+  border-color: transparent;
+}
+
+.record-toggle-button.is-recording {
+  background: #e74c3c;
+}
+
+.record-toggle-button.is-recording:hover {
+  background: #d33b2c;
+  border-color: transparent;
+}
+
+.record-idle-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.record-elapsed {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  min-width: 2.6em;
+  text-align: right;
+}
+
+.record-download-link {
+  color: var(--accent);
+  font-size: 0.85rem;
 }

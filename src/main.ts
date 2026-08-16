@@ -40,11 +40,13 @@ const masterEffectsEl =
 const patchGraphEl = document.querySelector<HTMLDivElement>("#patch-graph")!;
 const nodeMenuPanelEl =
   document.querySelector<HTMLElement>("#node-menu-panel")!;
-const recordButtonEl =
-  document.querySelector<HTMLButtonElement>("#record-button")!;
-const stopRecordButtonEl = document.querySelector<HTMLButtonElement>(
-  "#stop-record-button",
+const recordToggleButtonEl = document.querySelector<HTMLButtonElement>(
+  "#record-toggle-button",
 )!;
+const recordIdleLabelEl =
+  document.querySelector<HTMLSpanElement>("#record-idle-label")!;
+const recordElapsedEl =
+  document.querySelector<HTMLSpanElement>("#record-elapsed")!;
 const downloadLinkEl =
   document.querySelector<HTMLAnchorElement>("#download-link")!;
 const resetAudioButtonEl = document.querySelector<HTMLButtonElement>(
@@ -52,6 +54,13 @@ const resetAudioButtonEl = document.querySelector<HTMLButtonElement>(
 )!;
 
 const NODE_COLORS = ["#ffb454", "#4c7dff", "#6fdc8c", "#ff6b9d", "#c792ea"];
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
 
 unlockAudioContext(unlockEl).then(async (audioContext) => {
   const engine = new SampleNodeEngine(audioContext);
@@ -102,28 +111,63 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
   // including every node's effects and the master chain, same as
   // bruit-kit's own demo recorder.
   const recorder = new Recorder(audioContext, masterBus.output);
-  recordButtonEl.addEventListener("click", () => {
-    recorder.start();
-    recordButtonEl.disabled = true;
-    stopRecordButtonEl.disabled = false;
-    downloadLinkEl.hidden = true;
-  });
-  stopRecordButtonEl.addEventListener("click", async () => {
-    const { blob } = await recorder.stop();
-    recordButtonEl.disabled = false;
-    stopRecordButtonEl.disabled = true;
-    // MediaRecorder (inside Recorder) can't produce WAV directly -- decode
-    // whatever it did produce (webm/mp4) back into an AudioBuffer, then
-    // re-encode that as WAV for a universally-compatible download.
-    const decoded = await audioContext.decodeAudioData(
-      await blob.arrayBuffer(),
-    );
-    const wavBlob = audioBufferToWavBlob(decoded);
-    const url = URL.createObjectURL(wavBlob);
-    downloadLinkEl.href = url;
-    downloadLinkEl.download = "relpmas-recording.wav";
-    downloadLinkEl.textContent = "Download recording";
-    downloadLinkEl.hidden = false;
+
+  // One button carries both record and stop -- its own background color
+  // (green/red, via these two classes) signals which action a click
+  // performs next, rather than two separate buttons with one always
+  // disabled. recordStartedAt/recordTimerHandle back the live elapsed
+  // readout next to the button; both are cleared the moment recording
+  // stops, at which point download-link takes over that same slot (see
+  // the click handler below).
+  let recordStartedAt: number | null = null;
+  let recordTimerHandle: ReturnType<typeof setInterval> | null = null;
+
+  recordToggleButtonEl.textContent = "●";
+  recordToggleButtonEl.classList.add("is-idle");
+
+  recordToggleButtonEl.addEventListener("click", async () => {
+    if (recordToggleButtonEl.classList.contains("is-recording")) {
+      if (recordTimerHandle !== null) clearInterval(recordTimerHandle);
+      recordTimerHandle = null;
+      recordStartedAt = null;
+      recordElapsedEl.hidden = true;
+      recordToggleButtonEl.classList.remove("is-recording");
+      recordToggleButtonEl.classList.add("is-idle");
+      recordToggleButtonEl.textContent = "●";
+      recordToggleButtonEl.title = "Record";
+
+      const { blob } = await recorder.stop();
+      // MediaRecorder (inside Recorder) can't produce WAV directly --
+      // decode whatever it did produce (webm/mp4) back into an
+      // AudioBuffer, then re-encode that as WAV for a universally-
+      // compatible download.
+      const decoded = await audioContext.decodeAudioData(
+        await blob.arrayBuffer(),
+      );
+      const wavBlob = audioBufferToWavBlob(decoded);
+      const url = URL.createObjectURL(wavBlob);
+      downloadLinkEl.href = url;
+      downloadLinkEl.download = "relpmas-recording.wav";
+      downloadLinkEl.textContent = "Download";
+      downloadLinkEl.hidden = false;
+    } else {
+      recordIdleLabelEl.hidden = true;
+      downloadLinkEl.hidden = true;
+      recorder.start();
+      recordStartedAt = Date.now();
+      recordElapsedEl.textContent = "0:00";
+      recordElapsedEl.hidden = false;
+      recordTimerHandle = setInterval(() => {
+        if (recordStartedAt === null) return;
+        recordElapsedEl.textContent = formatElapsed(
+          Date.now() - recordStartedAt,
+        );
+      }, 250);
+      recordToggleButtonEl.classList.remove("is-idle");
+      recordToggleButtonEl.classList.add("is-recording");
+      recordToggleButtonEl.textContent = "■";
+      recordToggleButtonEl.title = "Stop";
+    }
   });
 
   const patchGraphView = createPatchGraphView(patchGraphEl, {
@@ -156,7 +200,7 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
   let selectedId: string | null = null;
 
   // The one place a node's full param set lives now -- opened on demand
-  // via right-click, docked as a persistent sidebar instead of an
+  // by clicking a node, docked as a persistent sidebar instead of an
   // always-visible panel per node (see nodeMenu.ts's own doc comment).
   const nodeMenu = createNodeMenu(engine, nodeMenuPanelEl, () => {
     syncNodeList();
@@ -186,11 +230,6 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
       selectedId = id;
       waveformView.setSelected(id);
       syncNodeList();
-    },
-    onContextMenu: (id) => {
-      selectedId = id;
-      waveformView.setSelected(id);
-      syncNodeList();
       nodeMenu.open(id);
     },
   });
@@ -216,6 +255,17 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     }
   }
 
+  // Add node stays enabled with nothing selected (it doesn't need a
+  // selection); every other node-toolbar action operates on selectedId
+  // and is meaningless without one.
+  function updateNodeButtonsEnabled(): void {
+    const disabled = selectedId === null;
+    duplicateNodeButtonEl.disabled = disabled;
+    removeNodeButtonEl.disabled = disabled;
+    fireNodeButtonEl.disabled = disabled;
+    triggerNodeButtonEl.disabled = disabled;
+  }
+
   function syncNodeList(): void {
     nodeListEl.innerHTML = "";
     for (const node of engine.listNodes()) {
@@ -228,16 +278,11 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
         selectedId = node.id;
         waveformView.setSelected(node.id);
         syncNodeList();
-      });
-      button.addEventListener("contextmenu", (event) => {
-        event.preventDefault();
-        selectedId = node.id;
-        waveformView.setSelected(node.id);
-        syncNodeList();
         nodeMenu.open(node.id);
       });
       nodeListEl.appendChild(button);
     }
+    updateNodeButtonsEnabled();
   }
 
   fileInputEl.addEventListener("change", async () => {
@@ -307,6 +352,13 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
       nodeMenu.updateLiveMarker(node.id, livePosition);
     }
   }, 500);
+
+  // Sets the node toolbar's own initial disabled state -- nothing else
+  // calls syncNodeList (or its updateNodeButtonsEnabled side effect)
+  // until the first user action (add/select/etc.), so without this the
+  // buttons would start enabled with no node selected instead of
+  // reflecting that empty state immediately.
+  syncNodeList();
 
   // Revealed only now, once every listener above (including the file
   // input's own) is wired -- revealing it as soon as the AudioContext
