@@ -142,6 +142,67 @@ function clampEnvelopeGain(value: number): number {
   return Math.min(4, Math.max(0, value));
 }
 
+/** Projects a wander's own retarget-then-glide walk forward by `dtMs`
+ * from `state`'s current values, without touching the shared runtime
+ * state itself (that stays advanceWander/tick()'s job, on its own
+ * independent DRIFT_TICK_MS real-time cadence).
+ *
+ * Needed because one trigger's whole multi-fire burst is built
+ * synchronously, all at once, for fire times that haven't happened yet
+ * -- every other curve-based domain (duringTrigger, fire,
+ * acrossTriggers, continuous) is already a pure function of that future
+ * time/burst-position/triggerIndex, so each fire in a burst correctly
+ * gets its own value. Wander isn't: it's a live, continuously-ticking
+ * value with no "what will this be at an arbitrary future instant"
+ * function, so reading a WanderState's own `.current` directly (as
+ * every fire in a burst used to) gave every fire in that burst the
+ * exact same sample -- nothing advances it between one loop iteration
+ * and the next, since the loop has no real elapsed time or awaits in it.
+ *
+ * Uses the same retarget-then-glide math advanceWander/driftMath use,
+ * just evaluated at an arbitrary elapsed offset instead of stepping a
+ * fixed DRIFT_TICK_MS at a time: within each retarget-bounded segment,
+ * gliding toward whatever target is active uses the closed-form
+ * continuous-time equivalent of applying lerpFactorFor's own per-tick
+ * factor once every DRIFT_TICK_MS
+ * (`1 - (1-lerpFactor)^(segmentMs/DRIFT_TICK_MS)`) rather than looping
+ * tick by tick; a segment that crosses a retarget boundary rolls a
+ * fresh random target and continues, same as the real thing eventually
+ * would -- just computed ahead of time instead of waiting for it. Not
+ * literally the same random draws the live runtime state will make when
+ * real time actually gets there (this doesn't mutate `state`), but a
+ * plausible, varying continuation of it -- a real improvement over every
+ * fire sharing one frozen snapshot. */
+function projectWander(
+  state: WanderState,
+  config: MotionConfig,
+  dtMs: number,
+): number {
+  if (dtMs <= 0) return state.current;
+  const nowMs = Date.now();
+  const endAt = nowMs + dtMs;
+  let current = state.current;
+  let target = state.wanderTarget;
+  let nextRetargetAt = state.nextRetargetAt;
+  let simulatedAt = nowMs;
+  const lerpFactor = lerpFactorFor(config.wanderSpeed);
+  let guard = 0;
+  while (simulatedAt < endAt && guard++ < 64) {
+    const segmentEnd = Math.min(endAt, nextRetargetAt);
+    const segmentMs = segmentEnd - simulatedAt;
+    if (segmentMs > 0) {
+      const factor = 1 - (1 - lerpFactor) ** (segmentMs / DRIFT_TICK_MS);
+      current += (target - current) * factor;
+    }
+    simulatedAt = segmentEnd;
+    if (simulatedAt >= nextRetargetAt) {
+      target = config.min + Math.random() * (config.max - config.min);
+      nextRetargetAt = simulatedAt + retargetDelayMsFor(config.wanderSpeed);
+    }
+  }
+  return current;
+}
+
 /** Owns the loaded buffer, every SampleNode, and the single shared
  * scheduler tick that drives loop-mode triggering and range motion (see
  * PLAN's "Core model" -- arm -> trigger -> fire, and range motion's
@@ -920,8 +981,11 @@ export class SampleNodeEngine {
    *   (not relative to any trigger), looped over the config's own
    *   `continuousLoopSeconds` -- entirely independent of triggers or
    *   fires, never resets.
-   * - useWander: the current wander snapshot (bruit-kit's driftMath
-   *   retarget-then-glide random walk) -- continuous and
+   * - useWander: bruit-kit's driftMath retarget-then-glide random walk,
+   *   projected forward from its own live state to `atTime` (see
+   *   projectWander's own doc comment for why a future fire can't just
+   *   read the live snapshot directly the way every other domain above
+   *   reads its own curve at a future position) -- continuous and
    *   trigger-independent like continuousEnabled, but random instead of a
    *   drawn shape.
    *
@@ -949,10 +1013,20 @@ export class SampleNodeEngine {
     triggerIndex: number,
     fallback: number,
   ): number {
+    // How far in the future (or, for a live/present-time call like
+    // tick()'s own overlay or fireNow(), effectively zero) atTime is from
+    // right now, in wall-clock ms -- see projectWander's own doc comment
+    // for why wander specifically needs this and every other domain
+    // here doesn't.
+    const wanderDtMs = (atTime - this.audioContext.currentTime) * 1000;
+
     if (config.useFixed) {
       if (config.useWander && wander) {
         const center = (config.min + config.max) / 2;
-        return config.fixedValue + (wander.current - center);
+        return (
+          config.fixedValue +
+          (projectWander(wander, config, wanderDtMs) - center)
+        );
       }
       return config.fixedValue;
     }
@@ -1005,7 +1079,7 @@ export class SampleNodeEngine {
       );
     }
     if (config.useWander && wander) {
-      contributions.push(wander.current);
+      contributions.push(projectWander(wander, config, wanderDtMs));
     }
 
     if (contributions.length === 0) return fallback;

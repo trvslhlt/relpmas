@@ -34,7 +34,6 @@ const fireNodeButtonEl =
   document.querySelector<HTMLButtonElement>("#fire-node")!;
 const triggerNodeButtonEl =
   document.querySelector<HTMLButtonElement>("#trigger-node")!;
-const nodeListEl = document.querySelector<HTMLDivElement>("#node-list")!;
 const masterEffectsEl =
   document.querySelector<HTMLDivElement>("#master-effects")!;
 const patchGraphEl = document.querySelector<HTMLDivElement>("#patch-graph")!;
@@ -179,6 +178,9 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
       engine.removeEdge(edgeId);
       syncPatchGraph();
     },
+    // The graph is the one place left a node can be selected now that
+    // the separate node-list is gone (see selectNode's own doc comment).
+    onSelect: (id) => selectNode(id, { openMenu: true }),
   });
 
   function syncPatchGraph(): void {
@@ -203,7 +205,7 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
   // by clicking a node, docked as a persistent sidebar instead of an
   // always-visible panel per node (see nodeMenu.ts's own doc comment).
   const nodeMenu = createNodeMenu(engine, nodeMenuPanelEl, () => {
-    syncNodeList();
+    updateNodeButtonsEnabled();
     syncWaveformEntries();
     syncPatchGraph();
   });
@@ -226,12 +228,7 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
       waveformView.setRange(id, { start: position, end: newEnd });
       nodeMenu.syncRange(id, { start: position, end: newEnd });
     },
-    onSelect: (id) => {
-      selectedId = id;
-      waveformView.setSelected(id);
-      syncNodeList();
-      nodeMenu.open(id);
-    },
+    onSelect: (id) => selectNode(id, { openMenu: true }),
   });
 
   engine.onLiveRange((id, range) => {
@@ -266,23 +263,22 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     triggerNodeButtonEl.disabled = disabled;
   }
 
-  function syncNodeList(): void {
-    nodeListEl.innerHTML = "";
-    for (const node of engine.listNodes()) {
-      const button = document.createElement("button");
-      button.textContent = node.label + (engine.isArmed(node.id) ? " ●" : "");
-      button.className = "node-list-button";
-      button.style.borderColor = node.color;
-      if (node.id === selectedId) button.classList.add("selected");
-      button.addEventListener("click", () => {
-        selectedId = node.id;
-        waveformView.setSelected(node.id);
-        syncNodeList();
-        nodeMenu.open(node.id);
-      });
-      nodeListEl.appendChild(button);
-    }
+  // The one place selectedId ever changes -- the waveform's own markers
+  // and the patch graph's own node boxes are the two surfaces a node can
+  // be picked from now that the separate node-list is gone (see
+  // patchGraphView's own onSelect wiring above). openMenu is false for
+  // add/duplicate/remove (selecting the newly-relevant node without
+  // forcibly popping its menu open, matching this app's existing
+  // behavior for those three) and true for an explicit click on a node
+  // itself.
+  function selectNode(
+    id: string | null,
+    options: { openMenu?: boolean } = {},
+  ): void {
+    selectedId = id;
+    waveformView.setSelected(id);
     updateNodeButtonsEnabled();
+    if (options.openMenu && id) nodeMenu.open(id);
   }
 
   fileInputEl.addEventListener("change", async () => {
@@ -300,10 +296,9 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     const color = NODE_COLORS[engine.listNodes().length % NODE_COLORS.length];
     const node = createSampleNode(color);
     await engine.addNode(node);
-    selectedId = node.id;
     syncWaveformEntries();
-    syncNodeList();
     syncPatchGraph();
+    selectNode(node.id);
   });
 
   duplicateNodeButtonEl.addEventListener("click", async () => {
@@ -313,10 +308,9 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     const color = NODE_COLORS[engine.listNodes().length % NODE_COLORS.length];
     const node = duplicateSampleNode(source, color);
     await engine.addNode(node);
-    selectedId = node.id;
     syncWaveformEntries();
-    syncNodeList();
     syncPatchGraph();
+    selectNode(node.id);
   });
 
   removeNodeButtonEl.addEventListener("click", () => {
@@ -324,10 +318,9 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     if (nodeMenu.isOpenFor(selectedId)) nodeMenu.close();
     engine.removeNode(selectedId);
     const remaining = engine.listNodes();
-    selectedId = remaining[0]?.id ?? null;
     syncWaveformEntries();
-    syncNodeList();
     syncPatchGraph();
+    selectNode(remaining[0]?.id ?? null);
   });
 
   fireNodeButtonEl.addEventListener("click", () => {
@@ -340,11 +333,10 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     engine.trigger(selectedId);
   });
 
-  // Live range-motion markers and the "armed" dot on the node-list button
-  // keep updating even when nothing else changes -- poll at a low rate
-  // rather than wiring a separate callback for something purely cosmetic.
+  // Live range-motion markers keep updating even when nothing else
+  // changes -- poll at a low rate rather than wiring a separate callback
+  // for something purely cosmetic.
   setInterval(() => {
-    syncNodeList();
     for (const node of engine.listNodes()) {
       const liveRange = engine.getLiveRange(node.id);
       const livePosition = liveRange ? liveRange.start : null;
@@ -354,11 +346,10 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
   }, 500);
 
   // Sets the node toolbar's own initial disabled state -- nothing else
-  // calls syncNodeList (or its updateNodeButtonsEnabled side effect)
-  // until the first user action (add/select/etc.), so without this the
-  // buttons would start enabled with no node selected instead of
-  // reflecting that empty state immediately.
-  syncNodeList();
+  // calls updateNodeButtonsEnabled until the first user action (add/
+  // select/etc.), so without this the buttons would start enabled with
+  // no node selected instead of reflecting that empty state immediately.
+  updateNodeButtonsEnabled();
 
   // Revealed only now, once every listener above (including the file
   // input's own) is wired -- revealing it as soon as the AudioContext

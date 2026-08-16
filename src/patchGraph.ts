@@ -32,6 +32,12 @@ export interface PatchGraphViewOptions {
     toNodeId: string,
   ) => void;
   onRemoveEdge: (edgeId: string) => void;
+  /** Fired on a plain click anywhere on a node's own box/label (not its
+   * ports -- those have their own pointerdown-driven drag-to-connect
+   * gesture, see startDrag) -- this graph is the one place left a node
+   * can be selected now that the separate node-list is gone, so this is
+   * also how a host app opens that node's own params menu. */
+  onSelect?: (id: string) => void;
 }
 
 export interface PatchGraphViewHandle {
@@ -164,6 +170,14 @@ export function createPatchGraphView(
     nodes.forEach((node, index) => {
       const origin = nodeOrigin(index);
       const group = document.createElementNS(SVG_NS, "g");
+      group.setAttribute("class", "patch-graph-node-group");
+      // A port's own pointerdown (startDrag) can produce a trailing
+      // native "click" on the same element if the pointer never moves --
+      // that bubbles up to this same listener, so a quick click on a
+      // port both starts (and immediately abandons) a drag AND selects
+      // the node it's on. Harmless: the node was already the one being
+      // dragged from, so selecting it too is never surprising.
+      group.addEventListener("click", () => options.onSelect?.(node.id));
 
       const box = document.createElementNS(SVG_NS, "rect");
       box.setAttribute("class", "patch-graph-node-box");

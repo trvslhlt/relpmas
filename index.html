@@ -8,11 +8,6 @@
   </head>
   <body>
     <h1>relpmas</h1>
-    <p class="app-note">
-      Load an audio file, then define sample nodes against it.
-      Click a node (on the waveform or in the list below) for its
-      params.
-    </p>
     <div id="unlock"></div>
     <div id="app" class="app-layout" hidden>
       <div id="record-widget" class="record-widget">
@@ -74,7 +69,7 @@
               </button>
             </div>
           </div>
-          <div id="node-list"></div>
+          <div id="patch-graph"></div>
         </section>
 
         <section class="panel">
@@ -89,15 +84,6 @@
           <div class="node-toolbar">
             <button id="reset-audio-button">Reset audio</button>
           </div>
-        </section>
-
-        <section class="panel">
-          <h2>Patch graph</h2>
-          <p class="app-note">
-            Drag from an out-port (trigS/trigE/fireS/fireE) to another
-            node's in-port to connect them. Click an edge to remove it.
-          </p>
-          <div id="patch-graph"></div>
         </section>
       </div>
 
