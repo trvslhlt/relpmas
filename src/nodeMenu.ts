@@ -424,23 +424,27 @@ export function createNodeMenu(
 
   /** Which of a node's four MotionConfig-driven controls the config grid
    * modal covers, in display order -- shared between the modal's own
-   * grid rows and nothing else (motionValueFields below reads showFire
-   * straight off its own call sites, same as it always did). `showFire:
-   * false` on rate mirrors the same `showFireOption: false` reasoning
-   * render() used to pass directly into motionFields (see its own
-   * removed doc comment: a single fire has no burst to sample
-   * fireEnabled's curve position from). Envelope's own Fire mode means
-   * something different from the other three rows' (a genuine per-
-   * sample-varying shape, not a baked scalar -- see SampleNode.
-   * envelopeMotion's own doc comment), but the grid checkbox itself
-   * behaves identically either way: it's just "is Fire on for this row." */
+   * grid rows and nothing else. `showFire` means genuinely different
+   * things per row now, deliberately (functionality over semantic
+   * consistency, per the user's own call): for Rate/Duration/Position,
+   * "Fire" means fresh uniform-random jitter within min/max, drawn per
+   * fire across a burst (see evaluateMotion's own fireEnabled branch) --
+   * for Rate specifically this is a stand-in for real per-fire pitch
+   * variation until a dedicated pitch-shift feature exists (tape-style
+   * rateSemitones is the only pitch control today, no independent
+   * pitch-shift effect yet), not the end state. For Envelope, "Fire"
+   * means something different in kind, not degree -- gain genuinely can
+   * (and does) vary *while* one voice plays, via a per-sample worklet
+   * lookup table (see SampleNode.envelopeMotion's own doc comment), not
+   * random jitter at all -- see motionFields' own fireCurve field below,
+   * shown only for this one row. */
   const MOTION_ROWS: {
     key: "rateMotion" | "durationMotion" | "positionMotion" | "envelopeMotion";
     label: string;
     showFire: boolean;
   }[] = [
     { key: "envelopeMotion", label: "Envelope", showFire: true },
-    { key: "rateMotion", label: "Rate", showFire: false },
+    { key: "rateMotion", label: "Rate", showFire: true },
     { key: "durationMotion", label: "Duration", showFire: true },
     { key: "positionMotion", label: "Position", showFire: true },
   ];
@@ -626,17 +630,23 @@ export function createNodeMenu(
    * config grid modal now (see openMotionConfigModal), not here; this
    * only ever renders the controls relevant to whatever ended up
    * enabled, so an unused domain shows nothing at all rather than a
-   * checkbox. Each of Trigger/Continuous/Fire renders as its own field
-   * group ending in its own curve editor (triggerCurvePoints/
-   * continuousCurvePoints/fireCurvePoints) -- checking more than one in
-   * the grid shows more than one group here, each independently
-   * drawable rather than forced to share a single curve (see
-   * MotionConfig's own doc comment). The one exception to "grid-gated"
-   * is `useWander`, which stays a checkbox here, ungated and unmoved --
-   * it was never part of the grid (see openMotionConfigModal's own doc
-   * comment on why: it's orthogonal to Fixed/Continuous/Trigger/Fire, a
-   * noise source layered on top of whatever mode a row is already in,
-   * not a mode of its own to pick between). */
+   * checkbox. Trigger and Continuous each render as their own field
+   * group ending in their own curve editor (triggerCurvePoints/
+   * continuousCurvePoints) -- checking both in the grid shows both
+   * groups here, each independently drawable rather than forced to
+   * share a single curve (see MotionConfig's own doc comment). Fire
+   * diverges by row on purpose: for envelope it's a third such group
+   * with its own curve editor (fireCurvePoints, a genuine per-sample
+   * shape); for duration/position it renders no extra fields at all --
+   * checking it just makes evaluateMotion draw random jitter within the
+   * min/max fields already shown above, nothing further to edit (see
+   * sampleNode.ts's own fireEnabled doc comment). The one exception to
+   * "grid-gated" entirely is `useWander`, which stays a checkbox here,
+   * ungated and unmoved -- it was never part of the grid (see
+   * openMotionConfigModal's own doc comment on why: it's orthogonal to
+   * Fixed/Continuous/Trigger/Fire, a noise source layered on top of
+   * whatever mode a row is already in, not a mode of its own to pick
+   * between). */
   function motionFields(
     node: SampleNode,
     key: "positionMotion" | "durationMotion" | "rateMotion" | "envelopeMotion",
@@ -843,7 +853,12 @@ export function createNodeMenu(
           ] as Field[])
         : []),
       ...wanderFields,
-      ...(config.fireEnabled
+      // Only envelope's own Fire mode gets a curve editor -- Duration/
+      // Position's Fire mode is random jitter within the min/max fields
+      // already shown above, not a drawn shape, so there's nothing
+      // further to edit here for them (see fireEnabled's own doc
+      // comment in sampleNode.ts).
+      ...(config.fireEnabled && key === "envelopeMotion"
         ? [
             {
               key: `${key}-fireCurve`,

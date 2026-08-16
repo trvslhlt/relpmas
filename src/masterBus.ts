@@ -4,6 +4,26 @@ import {
   LimiterEffect,
   buildEffectsChain,
 } from "bruit-kit/audio";
+import { EFFECT_TABLE } from "bruit-kit/ui";
+
+/** A compressor, params defaulted straight from EFFECT_TABLE -- the exact
+ * same construction effectsFields.ts's own "Add" button uses, so this
+ * stays in sync with EFFECT_TABLE's own defaults automatically rather
+ * than duplicating threshold/knee/ratio/attack/release/wet numbers here.
+ * Master's own always-on safety net (limiter) already exists downstream
+ * of this; the compressor is a musical default (tames peaks before they
+ * ever reach the limiter's own hard-knee catch), not a second copy of
+ * the same job -- still fully removable/adjustable via the master
+ * effects panel like any other entry. */
+function createDefaultCompressor(): EffectSpec {
+  const table = EFFECT_TABLE.find((e) => e.type === "compressor");
+  return {
+    type: "compressor",
+    params: Object.fromEntries(
+      (table?.params ?? []).map((p) => [p.key, p.default]),
+    ),
+  };
+}
 
 /** The one place every node's mix bus funnels through before speakers:
  * `source` (SampleNodeEngine.output) -> this bus's own EffectSpec[] chain
@@ -18,7 +38,7 @@ export class MasterBus {
   private limiter: LimiterEffect;
   private readonly outputGain: GainNode;
   private chain: BuiltEffectsChain;
-  private effects: EffectSpec[] = [];
+  private effects: EffectSpec[] = [createDefaultCompressor()];
 
   constructor(
     private readonly audioContext: AudioContext,

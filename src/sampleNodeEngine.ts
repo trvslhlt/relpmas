@@ -511,23 +511,12 @@ export class SampleNodeEngine {
         fireTimes.push(nextTime);
       }
     }
-    const burstSpan = fireTimes[fireTimes.length - 1] - now;
     const count = fireTimes.length;
 
     let lastFireEndTime = now;
     for (let i = 0; i < count; i++) {
       const fireTime = fireTimes[i];
-      const burstPosition =
-        node.firingPattern !== "single" && burstSpan > 0
-          ? (fireTime - now) / burstSpan
-          : null;
-      const range = this.rangeAtTime(
-        node,
-        runtime,
-        fireTime,
-        burstPosition,
-        triggerIndex,
-      );
+      const range = this.rangeAtTime(node, runtime, fireTime, triggerIndex);
       const direction = this.resolveDirection(node, runtime);
       const rateMultiplier = clampRateMultiplier(
         this.evaluateMotion(
@@ -536,7 +525,6 @@ export class SampleNodeEngine {
           fireTime,
           runtime.lastTriggerAt,
           node.triggerPeriodSeconds,
-          burstPosition,
           triggerIndex,
           1,
         ),
@@ -545,7 +533,6 @@ export class SampleNodeEngine {
         node,
         runtime,
         fireTime,
-        burstPosition,
         triggerIndex,
       );
       audio.player.playVoice({
@@ -790,7 +777,6 @@ export class SampleNodeEngine {
         this.audioContext.currentTime,
         runtime.lastTriggerAt,
         node.triggerPeriodSeconds,
-        null,
         runtime.triggerIndex,
         1,
       ),
@@ -799,7 +785,6 @@ export class SampleNodeEngine {
       node,
       runtime,
       this.audioContext.currentTime,
-      null,
       runtime.triggerIndex,
     );
     return audio.player.playVoice({
@@ -841,20 +826,16 @@ export class SampleNodeEngine {
    * the range's own start, same wraparound semantics as the range itself
    * (see wrappedLength's own doc comment) just rescoped one level in.
    *
-   * `burstPosition` (0..1, or null) is trigger()'s own precomputed
-   * "how far through this multi-fire burst is this fire" -- fed to
-   * evaluateMotion's fireEnabled contribution. `triggerIndex` defaults to
-   * the runtime's own current value (tick()'s continuous live-overlay
-   * evaluation has no specific trigger to pass one from), but trigger()
-   * itself passes its own captured index explicitly so every fire in one
-   * trigger's burst uses the same acrossTriggersEnabled contribution,
-   * even though duringTriggerEnabled/fireEnabled can still differ per
-   * fire. */
+   * `triggerIndex` defaults to the runtime's own current value (tick()'s
+   * continuous live-overlay evaluation has no specific trigger to pass
+   * one from), but trigger() itself passes its own captured index
+   * explicitly so every fire in one trigger's burst uses the same
+   * acrossTriggersEnabled contribution, even though duringTriggerEnabled
+   * can still differ per fire. */
   private rangeAtTime(
     node: SampleNode,
     runtime: NodeRuntime,
     atTime: number,
-    burstPosition: number | null = null,
     triggerIndex: number = runtime.triggerIndex,
   ): WaveformRange {
     const rangeStart = node.range.start;
@@ -869,7 +850,6 @@ export class SampleNodeEngine {
       atTime,
       runtime.lastTriggerAt,
       node.triggerPeriodSeconds,
-      burstPosition,
       triggerIndex,
       0,
     );
@@ -879,7 +859,6 @@ export class SampleNodeEngine {
       atTime,
       runtime.lastTriggerAt,
       node.triggerPeriodSeconds,
-      burstPosition,
       triggerIndex,
       1,
     );
@@ -927,10 +906,11 @@ export class SampleNodeEngine {
    *   `lastTriggerAt`, looped over `triggerPeriodSeconds` -- restarts at
    *   curve position 0 on every trigger, same trigger-relative timing
    *   sweepRoute/lfoRoute already use for their own ramps.
-   * - fireEnabled: sampleCurveAt this fire's own `burstPosition` (0 when
-   *   null -- a single fire, or fireNow()'s immediate one-off) -- baked
-   *   into that one voice at the instant it's computed, never
-   *   re-evaluated during its own playback.
+   * - fireEnabled: a fresh uniform-random draw within [min, max] --
+   *   baked into that one voice at the instant it's computed, never
+   *   re-evaluated during its own playback (see MotionConfig's own
+   *   fireEnabled doc comment for envelope's own, different Fire
+   *   mechanism, which never reaches this branch at all).
    * - acrossTriggersEnabled: sampleCurveAt (`triggerIndex` modulo the
    *   config's own `triggerCycleLength`) / `triggerCycleLength` -- steps
    *   exactly once per trigger *event*, not per unit of elapsed time, so
@@ -966,7 +946,6 @@ export class SampleNodeEngine {
     atTime: number,
     lastTriggerAt: number,
     triggerPeriodSeconds: number,
-    burstPosition: number | null,
     triggerIndex: number,
     fallback: number,
   ): number {
@@ -992,9 +971,18 @@ export class SampleNodeEngine {
       );
     }
     if (config.fireEnabled) {
-      contributions.push(
-        sampleCurveAt(config.fireCurvePoints, burstPosition ?? 0, range),
-      );
+      // Uniform random draw within [min, max], freshly rolled per fire --
+      // not a curve sample. This branch is only ever reached by Rate/
+      // Duration/Position (Envelope's own fireEnabled bypasses
+      // evaluateMotion entirely, forced off in computeEnvelopeGain's own
+      // bakedConfig, since its Fire mode is a genuine per-sample worklet
+      // shape rather than a per-fire scalar -- see MotionConfig's own
+      // doc comment on fireEnabled for why the two diverge). A drawn
+      // curve sampled by burst position implied a deliberate sweep
+      // across a burst, which doesn't fit "Fire" as well as plain
+      // per-fire jitter does for a value that's baked once before a
+      // fire starts and can't change while it plays either way.
+      contributions.push(range.min + Math.random() * (range.max - range.min));
     }
     if (config.acrossTriggersEnabled) {
       const cycleLength = Math.max(1, Math.round(config.triggerCycleLength));
@@ -1042,7 +1030,6 @@ export class SampleNodeEngine {
     node: SampleNode,
     runtime: NodeRuntime,
     atTime: number,
-    burstPosition: number | null,
     triggerIndex: number,
   ): number {
     const bakedConfig: MotionConfig = {
@@ -1057,7 +1044,6 @@ export class SampleNodeEngine {
         atTime,
         runtime.lastTriggerAt,
         node.triggerPeriodSeconds,
-        burstPosition,
         triggerIndex,
         1,
       ),

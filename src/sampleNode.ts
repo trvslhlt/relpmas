@@ -82,13 +82,20 @@ export type FiringPattern =
  *   start, so elapsed time there is always ~0 (see fireEnabled below and
  *   acrossTriggersEnabled for the two ways to get real movement out of a
  *   single-fire node instead).
- * - `fireEnabled`: samples `fireCurvePoints` at this specific fire's own
- *   position within the current firing burst (0 for a single fire, or
- *   the first of a multi-fire burst; 1 for the burst's last fire) --
- *   baked into that one voice at the instant it fires, never
- *   re-evaluated during its own playback. Same "always ~0 for a single
- *   fire" caveat as duringTriggerEnabled, for the same reason (a single
- *   fire has no burst to have a position within).
+ * - `fireEnabled`: means one of two genuinely different things depending
+ *   on which control it's checked for -- deliberately divergent (see
+ *   nodeMenu.ts's MOTION_ROWS: functionality over semantic consistency
+ *   here). For position/duration/rate, evaluateMotion draws a fresh
+ *   uniform-random value within [min, max] for every fire (jitter
+ *   fire-to-fire across a burst, e.g. each grain in a burst landing at a
+ *   slightly different spot or length) -- baked into that one voice at
+ *   the instant it fires, same as every other domain here, since none
+ *   of these can change once a voice is already playing regardless. For
+ *   envelope specifically, it instead samples `fireCurvePoints` (see
+ *   that field's own doc comment) as a genuine per-sample-varying shape
+ *   across that one fire's own playback -- the one domain here that
+ *   actually can change while a voice plays, via a worklet lookup table
+ *   rather than evaluateMotion's baked-scalar summing.
  * - `acrossTriggersEnabled`: samples the *same* `triggerCurvePoints`
  *   duringTriggerEnabled uses (never both active at once -- see
  *   nodeMenu.ts's mutually-exclusive "trigger mode" select, so there's
@@ -109,19 +116,23 @@ export type FiringPattern =
  *   at `wanderSpeed`, continuous and trigger-independent like
  *   `continuousEnabled` but random rather than a drawn shape.
  *
- * Trigger/Continuous/Fire each get their *own* curve
- * (triggerCurvePoints/continuousCurvePoints/fireCurvePoints) rather than
- * sharing one -- checking more than one at once (e.g. Trigger + Fire)
- * still sums their contributions (evaluateMotion's own summing formula
- * is unchanged), but each now reads its own independently-drawn shape
- * instead of being forced to reuse the same curve for two conceptually
- * different things (how a value moves across a trigger's own timeline
- * vs. how it varies fire to fire within one). nodeMenu.ts's
- * motionFields renders each active domain as its own field group with
- * its own curve editor, only for whichever domains are actually
- * checked. `fallback` is when nothing is enabled at all: baked into the
- * caller, not stored here (range start for position, full range length
- * for duration -- see rangeAtTime). */
+ * Trigger and Continuous each get their *own* curve (triggerCurvePoints/
+ * continuousCurvePoints) rather than sharing one -- checking more than
+ * one domain at once still sums their contributions (evaluateMotion's
+ * own summing formula is unchanged), but each now reads its own
+ * independently-drawn shape instead of being forced to reuse the same
+ * curve for two conceptually different things (how a value moves across
+ * a trigger's own timeline vs. how it loops on a free-running clock).
+ * `fireCurvePoints` follows the same one-domain-one-curve idea but is
+ * only actually read this way for envelope -- see fireEnabled's own doc
+ * comment above for why position/duration/rate's Fire mode uses random
+ * jitter instead and never touches this array at all. nodeMenu.ts's
+ * motionFields renders each active domain as its own field group, with
+ * its own curve editor for Trigger/Continuous/envelope's-own-Fire, only
+ * for whichever domains are actually checked. `fallback` is when
+ * nothing is enabled at all: baked into the caller, not stored here
+ * (range start for position, full range length for duration -- see
+ * rangeAtTime). */
 export interface MotionConfig {
   useFixed: boolean;
   fixedValue: number;
@@ -132,6 +143,12 @@ export interface MotionConfig {
    * active). */
   triggerCurvePoints: AutomationPoint[];
   duringTriggerEnabled: boolean;
+  /** Only actually read while fireEnabled for envelope specifically --
+   * position/duration/rate's own Fire mode is random jitter instead
+   * (see fireEnabled's own doc comment), never touches this array.
+   * Still present on every MotionConfig (not just envelopeMotion) so
+   * the shape stays uniform across all four -- harmless, unread dead
+   * data the other three. */
   fireCurvePoints: AutomationPoint[];
   fireEnabled: boolean;
   acrossTriggersEnabled: boolean;
@@ -212,11 +229,13 @@ function ascendingCurve(): AutomationPoint[] {
  * not-moving fallback distinct from "fixed at 1.0"), so this starts with
  * useFixed already on rather than createMotionConfig's own all-off
  * default. fireEnabled is the natural first toggle to reach for once
- * fixed is turned off for a multi-fire node (sweeping rate across a
- * burst); acrossTriggersEnabled is the one for a single-fire node
- * (stepping rate from one trigger to the next) -- see MotionConfig's own
- * doc comment on both. Everything still starts off same as every other
- * toggle; nothing here restricts which the user can actually check. */
+ * fixed is turned off for a multi-fire node (random pitch jitter
+ * fire-to-fire across a burst, a stand-in for real per-fire pitch
+ * variation until a dedicated pitch-shift feature exists);
+ * acrossTriggersEnabled is the one for a single-fire node (stepping rate
+ * from one trigger to the next) -- see MotionConfig's own doc comment on
+ * both. Everything still starts off same as every other toggle; nothing
+ * here restricts which the user can actually check. */
 function createRateMotion(): MotionConfig {
   return {
     useFixed: true,
@@ -469,10 +488,12 @@ export function createSampleNode(color: string): SampleNode {
 
     firingPattern: "single",
     fireCount: 10,
+    // Flat at 0.5 -- a neutral starting point (mid-way between
+    // intervalMinMs/intervalMaxMs) rather than a specific decay shape
+    // baked into every new node by default.
     intervalCurve: [
-      { position: 0, value: 1 },
-      { position: 0.5, value: 0.35 },
-      { position: 1, value: 0.05 },
+      { position: 0, value: 0.5 },
+      { position: 1, value: 0.5 },
     ],
     intervalMinMs: 40,
     intervalMaxMs: 600,
