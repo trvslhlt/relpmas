@@ -12,10 +12,11 @@ services:
       - "5176:5173"
     volumes:
       - .:/workspace/relpmas
-      # Anonymous volume so the container's own node_modules (installed for
-      # Linux, and holding the file: symlink to bruit-kit -- see below)
-      # isn't shadowed by the host bind mount above.
-      - /workspace/relpmas/node_modules
+      # Named (not anonymous) so the container's own node_modules (installed
+      # for Linux, and holding the file: symlink to bruit-kit -- see below)
+      # isn't shadowed by the host bind mount above, and rebuilds reuse this
+      # volume instead of orphaning a new one.
+      - app_node_modules:/workspace/relpmas/node_modules
       # Sibling package (package.json depends on it via
       # "file:../bruit-kit", relative to /workspace/relpmas) -- read-only
       # since this container only consumes it, never builds it. bruit-kit
@@ -23,3 +24,9 @@ services:
       # here shells into it first (see this project's Makefile) so dist/
       # is fresh before this container starts.
       - ../bruit-kit:/workspace/bruit-kit:ro
+
+# Named node_modules volume (see comment on app's mount above): reused
+# across container recreates instead of Compose orphaning a fresh anonymous
+# volume every time, which is what was silently filling up disk space.
+volumes:
+  app_node_modules:
