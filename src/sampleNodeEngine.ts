@@ -44,6 +44,13 @@ export interface GraphEdge {
   fromNodeId: string;
   fromEvent: NodeEventType;
   toNodeId: string;
+  /** Rolled fresh (see emitEvent) every time this edge's own fromEvent
+   * fires -- 1 (the default for every existing/newly-drawn edge) always
+   * cascades, exactly today's behavior; anything lower makes the cascade
+   * probabilistic instead of deterministic. `Math.random()` is in [0, 1),
+   * so a probability of exactly 1 is mathematically guaranteed to pass,
+   * not just "almost always." */
+  probability: number;
 }
 
 interface WanderState {
@@ -203,8 +210,9 @@ function projectWander(
   return current;
 }
 
-/** Owns the loaded buffer, every SampleNode, and the single shared
- * scheduler tick that drives loop-mode triggering and range motion (see
+/** Owns every loaded audio file (see `files`), every SampleNode, and the
+ * single shared scheduler tick that drives loop-mode triggering and range
+ * motion (see
  * PLAN's "Core model" -- arm -> trigger -> fire, and range motion's
  * position/length scalars). No graph/modulation-route support yet (later
  * PLAN steps build directly on this same engine rather than replacing it
@@ -224,7 +232,18 @@ export class SampleNodeEngine {
   private readonly runtime = new Map<string, NodeRuntime>();
   private readonly audio = new Map<string, NodeAudio>();
   private readonly edges = new Map<string, GraphEdge>();
-  private buffer: AudioBuffer | null = null;
+  /** Every currently-loaded audio file, keyed by a freshly-generated id --
+   * each SampleNode carries its own `fileId` (sampleNode.ts) pointing into
+   * this map, rather than the whole engine sharing one buffer the way it
+   * used to. Each node already has its own DirectionalSamplePlayer
+   * (NodeAudio.player, below) with its own independently-loadable sample,
+   * so per-node file assignment was already half-built before this map
+   * existed -- addNode/setNodeFile just point each node's own player at
+   * the right entry instead of every node always loading the same one. */
+  private readonly files = new Map<
+    string,
+    { id: string; label: string; buffer: AudioBuffer }
+  >();
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   private onLiveRangeChange:
     | ((id: string, range: WaveformRange) => void)
@@ -274,9 +293,10 @@ export class SampleNodeEngine {
     fromNodeId: string,
     fromEvent: NodeEventType,
     toNodeId: string,
+    probability = 1,
   ): string {
     const id = `edge-${this.nextEdgeId++}`;
-    this.edges.set(id, { id, fromNodeId, fromEvent, toNodeId });
+    this.edges.set(id, { id, fromNodeId, fromEvent, toNodeId, probability });
     return id;
   }
 
@@ -284,23 +304,85 @@ export class SampleNodeEngine {
     this.edges.delete(id);
   }
 
+  setEdgeProbability(id: string, probability: number): void {
+    const edge = this.edges.get(id);
+    if (!edge) return;
+    edge.probability = probability;
+  }
+
   listEdges(): GraphEdge[] {
     return [...this.edges.values()];
   }
 
-  async loadSample(buffer: AudioBuffer): Promise<void> {
-    this.buffer = buffer;
+  /** Registers a newly-loaded file under `id` -- unlike the old single-
+   * buffer `loadSample`, this never touches any existing node's own
+   * player: a file nothing is assigned to yet can't affect anything
+   * already playing, so there's no fan-out to do here (see setNodeFile
+   * for the one place a node's player actually gets pointed at a
+   * buffer). */
+  addFile(id: string, label: string, buffer: AudioBuffer): void {
+    this.files.set(id, { id, label, buffer });
+  }
+
+  /** No-ops (returns false) if any node still has `fileId === id` --
+   * blocks removing a file still in use rather than silently orphaning
+   * those nodes (simplest safe default; a caller wanting to remove it
+   * anyway should reassign or remove those nodes first). */
+  removeFile(id: string): boolean {
+    for (const node of this.nodes.values()) {
+      if (node.fileId === id) return false;
+    }
+    return this.files.delete(id);
+  }
+
+  listFiles(): { id: string; label: string }[] {
+    return [...this.files.values()].map(({ id, label }) => ({ id, label }));
+  }
+
+  hasFiles(): boolean {
+    return this.files.size > 0;
+  }
+
+  getBuffer(fileId: string): AudioBuffer | null {
+    return this.files.get(fileId)?.buffer ?? null;
+  }
+
+  /** Reassigns a node to a different loaded file -- reloads that node's
+   * own already-existing player (each node has one of its own, see
+   * NodeAudio) with the new buffer, same as addNode does for a node's
+   * initial file. `node.range`'s fractions are left exactly as they are:
+   * a fraction is portable across buffers of any length, same "no
+   * buffer-specific data baked in" reasoning duplicateSampleNode/node
+   * presets already rely on. A no-op if the file doesn't exist. */
+  async setNodeFile(id: string, fileId: string): Promise<void> {
+    const node = this.nodes.get(id);
+    const audio = this.audio.get(id);
+    const file = this.files.get(fileId);
+    if (!node || !audio || !file) return;
+    await audio.player.loadSample(file.buffer);
+    node.fileId = fileId;
+  }
+
+  /** Swaps a loaded file's own buffer (and optionally its label) in place,
+   * keeping its id -- unlike setNodeFile (which moves one node onto a
+   * *different* file), this is for putting different audio *underneath*
+   * the file every node currently on it already references, so every one
+   * of those nodes keeps its own fileId and its range's fractions exactly
+   * as they are (same "fraction is portable across buffers" reasoning
+   * setNodeFile's own doc comment relies on) while what actually plays
+   * changes. Reloads each such node's own already-existing player with the
+   * new buffer, same as setNodeFile does for a single node. A no-op if the
+   * file doesn't exist. */
+  async replaceFile(id: string, buffer: AudioBuffer, label?: string): Promise<void> {
+    const file = this.files.get(id);
+    if (!file) return;
+    file.buffer = buffer;
+    if (label !== undefined) file.label = label;
     await Promise.all(
-      [...this.audio.values()].map((a) => a.player.loadSample(buffer)),
+      [...this.nodes.values()]
+        .filter((node) => node.fileId === id)
+        .map((node) => this.audio.get(node.id)?.player.loadSample(buffer)),
     );
-  }
-
-  hasSample(): boolean {
-    return this.buffer !== null;
-  }
-
-  getBuffer(): AudioBuffer | null {
-    return this.buffer;
   }
 
   /** Async (unlike a plain data-model add) since each node needs its own
@@ -323,7 +405,8 @@ export class SampleNodeEngine {
 
     const player = new DirectionalSamplePlayer(this.audioContext);
     await player.init();
-    if (this.buffer) await player.loadSample(this.buffer);
+    const file = this.files.get(node.fileId);
+    if (file) await player.loadSample(file.buffer);
     const envelopeGain = this.audioContext.createGain();
     const chain = buildEffectsChain(this.audioContext, node.effects);
     player.connect(envelopeGain);
@@ -496,7 +579,8 @@ export class SampleNodeEngine {
     const node = this.nodes.get(id);
     const runtime = this.runtime.get(id);
     const audio = this.audio.get(id);
-    if (!node || !runtime || !audio || !this.buffer) return;
+    const file = this.files.get(node?.fileId ?? "");
+    if (!node || !runtime || !audio || !file) return;
     if (!runtime.armed) return;
 
     const now = this.audioContext.currentTime;
@@ -610,7 +694,7 @@ export class SampleNodeEngine {
       });
 
       const durationSeconds =
-        (wrappedLength(range.start, range.end) * this.buffer.duration) /
+        (wrappedLength(range.start, range.end) * file.buffer.duration) /
         rateMultiplier;
       const fireEndTime = fireTime + durationSeconds;
       lastFireEndTime = fireEndTime;
@@ -644,11 +728,19 @@ export class SampleNodeEngine {
   /** Notifies the UI callback, then walks outgoing graph edges for this
    * exact (nodeId, event) pair and triggers every target -- a cascade can
    * itself schedule further cascades (a chain of nodes triggering each
-   * other), each one independently timed off its own fires the same way. */
+   * other), each one independently timed off its own fires the same way.
+   * Each edge's own probability is rolled fresh right here, once per
+   * (nodeId, event) firing -- not once per edge lifetime -- so a 50%
+   * edge genuinely flips a coin on every cascade rather than being
+   * permanently "on" or "off" from the moment it was drawn. */
   private emitEvent(id: string, event: NodeEventType): void {
     this.onNodeEventFired?.(id, event);
     for (const edge of this.edges.values()) {
-      if (edge.fromNodeId === id && edge.fromEvent === event) {
+      if (
+        edge.fromNodeId === id &&
+        edge.fromEvent === event &&
+        Math.random() < edge.probability
+      ) {
         this.trigger(edge.toNodeId);
       }
     }
@@ -828,7 +920,9 @@ export class SampleNodeEngine {
     const node = this.nodes.get(id);
     const runtime = this.runtime.get(id);
     const audio = this.audio.get(id);
-    if (!node || !runtime || !audio || !this.buffer) return null;
+    if (!node || !runtime || !audio || !this.files.has(node.fileId)) {
+      return null;
+    }
     const range = runtime.liveRange;
     const direction = this.resolveDirection(node, runtime);
     const rateMultiplier = clampRateMultiplier(

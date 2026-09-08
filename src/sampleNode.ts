@@ -306,7 +306,16 @@ export interface SampleNode {
   id: string;
   label: string;
   color: string;
-  /** 0..1 fractions of the loaded buffer's own duration -- the base range
+  /** Which of the engine's loaded files (SampleNodeEngine.listFiles) this
+   * node's own range/motion below apply to -- each node has its own
+   * DirectionalSamplePlayer, so nodes can each point at a different file
+   * and still all patch/cascade together normally. Reassignable live via
+   * SampleNodeEngine.setNodeFile; `range`'s fractions carry over
+   * unchanged across a reassignment (see setNodeFile's own doc comment),
+   * same "portable fraction" reasoning duplicateSampleNode/node presets
+   * already rely on. */
+  fileId: string;
+  /** 0..1 fractions of this node's own file's duration -- the base range
    * range motion (below) moves away from and returns to being the default
    * when nothing in positionMotion is enabled. Directional, not an
    * unordered {lo,hi} bound: if start > end, the fragment wraps through
@@ -465,12 +474,13 @@ export function createLfoRoute(): LfoRoute {
 
 let nextId = 1;
 
-export function createSampleNode(color: string): SampleNode {
+export function createSampleNode(color: string, fileId: string): SampleNode {
   const id = `node-${nextId++}`;
   return {
     id,
     label: id,
     color,
+    fileId,
     // 1/20th of the track (0.05, a plain fraction -- always exactly this
     // regardless of the buffer's own actual duration, unlike a fixed
     // seconds value which would need the buffer's length on hand at
@@ -549,5 +559,34 @@ export function duplicateSampleNode(
     id,
     label: `${source.label} copy`,
     color,
+  };
+}
+
+/** Builds a fresh node from a saved preset's own data (see
+ * nodePresets.ts's own NodePreset -- everything a SampleNode carries
+ * except id/label/color/fileId) -- mirrors duplicateSampleNode's shape
+ * (shares the same nextId counter, structuredClone rather than a shallow
+ * spread for the same "no shared nested references" reasoning) but takes
+ * an already-detached data object instead of an existing live node, and
+ * defaults the new node's label to the preset's own name (more useful
+ * than createSampleNode's plain "node-7" default) rather than an
+ * "X copy" suffix, since a preset isn't a copy of any particular node.
+ * `fileId` is a separate param (not part of the preset's own data) since
+ * a preset is file-independent -- the caller decides which of the
+ * currently loaded files the new node should start on, same as
+ * createSampleNode's own fileId param. */
+export function createSampleNodeFromPreset(
+  data: Omit<SampleNode, "id" | "label" | "color" | "fileId">,
+  color: string,
+  label: string,
+  fileId: string,
+): SampleNode {
+  const id = `node-${nextId++}`;
+  return {
+    ...structuredClone(data),
+    id,
+    label,
+    color,
+    fileId,
   };
 }

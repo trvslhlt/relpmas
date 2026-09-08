@@ -28,7 +28,21 @@
       <div class="app-main">
         <section class="panel">
           <h2>Source</h2>
-          <p><input type="file" id="file-input" accept="audio/*" /></p>
+          <p>
+            <input
+              type="file"
+              id="file-input"
+              accept="audio/*"
+              multiple
+            />
+          </p>
+          <input
+            type="file"
+            id="file-replace-input"
+            accept="audio/*"
+            hidden
+          />
+          <div id="file-tabs" class="file-tabs"></div>
           <div id="waveform"></div>
         </section>
 
@@ -66,6 +80,20 @@
                 title="Trigger (pattern)"
               >
                 ⟳
+              </button>
+              <button
+                id="save-preset"
+                class="icon-button"
+                title="Save selected node as preset"
+              >
+                💾
+              </button>
+              <button
+                id="load-preset"
+                class="icon-button"
+                title="Load a saved node preset"
+              >
+                📂
               </button>
             </div>
           </div>

@@ -77,13 +77,6 @@ export interface NodeMenuHandle {
    * otherwise, so a caller can call this unconditionally from its own
    * polling loop without checking isOpenFor itself first. */
   updateLiveMarker(id: string, position: number | null): void;
-  /** Pushes a newly-loaded sample onto the embedded waveform, if the menu
-   * is currently showing one -- otherwise a no-op, since ensureWaveform
-   * already pulls the current buffer from the engine whenever it next
-   * builds a view for a node. Needed because loading a new file doesn't
-   * change which node is open, so ensureWaveform's "same node, skip
-   * rebuild" path would otherwise never see the new buffer. */
-  setBuffer(buffer: AudioBuffer): void;
   /** Pushes an externally-changed range (e.g. dragged on the main overview
    * waveform, not through this menu's own embedded editor) onto the
    * embedded waveform, if this menu is currently open for `id` -- a no-op
@@ -91,6 +84,12 @@ export interface NodeMenuHandle {
    * Cheap (setRange only, no full field re-render), safe to call on every
    * pointermove of a drag. */
   syncRange(id: string, range: WaveformRange): void;
+  /** Rebuilds the embedded waveform if the panel is currently open on a
+   * node whose fileId is `fileId` -- for a file whose own buffer just got
+   * swapped out from under it (see SampleNodeEngine.replaceFile), since
+   * neither the open node's id nor its fileId changes in that case. A
+   * no-op otherwise. */
+  refreshWaveformIfShowing(fileId: string): void;
 }
 
 export function createNodeMenu(
@@ -378,6 +377,11 @@ export function createNodeMenu(
   let zoomableView: ReturnType<typeof createZoomableWaveformRangeView> | null =
     null;
   let waveformNodeId: string | null = null;
+  /** Tracked alongside waveformNodeId -- reassigning a node to a different
+   * file (see the "Source file" field below) keeps the same node.id, so
+   * id alone isn't enough to detect "this node's own waveform needs a
+   * fresh buffer." */
+  let waveformFileId: string | null = null;
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key !== "Escape") return;
@@ -411,7 +415,7 @@ export function createNodeMenu(
    * "Snap to selection" (below) sets triggerPeriodSeconds to exactly that
    * unadjusted length. null before a sample is loaded. */
   function selectionDurationSeconds(node: SampleNode): number | null {
-    const buffer = engine.getBuffer();
+    const buffer = engine.getBuffer(node.fileId);
     if (!buffer) return null;
     return wrappedLength(node.range.start, node.range.end) * buffer.duration;
   }
@@ -1055,6 +1059,30 @@ export function createNodeMenu(
   function playbackFields(node: SampleNode): Field[] {
     return [
       {
+        key: "fileId",
+        label: "Source file",
+        kind: "select",
+        value: node.fileId,
+        options: engine
+          .listFiles()
+          .map((file) => ({ value: file.id, label: file.label })),
+        // setNodeFile is async (it reloads this node's own player with the
+        // new file's buffer) and reassigns node.fileId as a side effect --
+        // doesn't fit update()'s plain synchronous patch shape, so this
+        // calls the engine directly and re-renders once it resolves.
+        // ensureWaveform picks up the new buffer on that next render (see
+        // its own waveformFileId tracking) and onNodeChanged() re-syncs
+        // the main overview waveform/patch graph, since this node just
+        // moved from one file's marker set to another's.
+        onChange: (value) => {
+          if (!currentId) return;
+          engine.setNodeFile(currentId, value).then(() => {
+            render();
+            onNodeChanged();
+          });
+        },
+      },
+      {
         key: "direction",
         label: "Direction",
         kind: "select",
@@ -1163,10 +1191,14 @@ export function createNodeMenu(
    * the rest of the panel (e.g. after an effect add/remove) must not reset
    * an in-progress zoom/pan on the same node's own waveform. */
   function ensureWaveform(node: SampleNode): void {
-    if (waveformNodeId === node.id && zoomableView) {
-      // Still the same node -- just make sure the range reflects any
-      // external change (e.g. dragged on the main overview waveform)
-      // without touching zoom/pan.
+    if (
+      waveformNodeId === node.id &&
+      waveformFileId === node.fileId &&
+      zoomableView
+    ) {
+      // Still the same node on the same file -- just make sure the range
+      // reflects any external change (e.g. dragged on the main overview
+      // waveform) without touching zoom/pan.
       zoomableView.setRange(node.range);
       updateSelectionDurationDisplay(node);
       return;
@@ -1178,9 +1210,10 @@ export function createNodeMenu(
         updateSelectionDurationDisplay(node);
       },
     });
-    const buffer = engine.getBuffer();
+    const buffer = engine.getBuffer(node.fileId);
     if (buffer) zoomableView.setBuffer(buffer);
     waveformNodeId = node.id;
+    waveformFileId = node.fileId;
     updateSelectionDurationDisplay(node);
   }
 
@@ -1256,14 +1289,23 @@ export function createNodeMenu(
     updateLiveMarker(id, position) {
       if (id === currentId) zoomableView?.setLiveMarker(position);
     },
-    setBuffer(buffer) {
-      zoomableView?.setBuffer(buffer);
-    },
     syncRange(id, range) {
       if (id !== currentId) return;
       zoomableView?.setRange(range);
       const node = engine.getNode(id);
       if (node) updateSelectionDurationDisplay(node);
+    },
+    // For a file whose own buffer just got swapped out from under it (see
+    // SampleNodeEngine.replaceFile) -- ensureWaveform's cache check only
+    // ever looks at node.id/node.fileId, neither of which changes here, so
+    // without this it would keep showing the old buffer's waveform.
+    // Cheap and always safe to call: a no-op unless the panel is open on a
+    // node actually pointing at fileId.
+    refreshWaveformIfShowing(fileId) {
+      if (!currentId) return;
+      if (waveformFileId !== fileId) return;
+      waveformFileId = null;
+      render();
     },
   };
 }

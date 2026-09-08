@@ -151,6 +151,59 @@ input[type="file"] {
   flex-wrap: wrap;
 }
 
+.file-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.file-tab {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.file-tab.is-active {
+  border-color: var(--accent);
+}
+
+.file-tab-label {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tab.is-active .file-tab-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.file-tab-replace,
+.file-tab-remove {
+  background: none;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+}
+
+.file-tab-replace:hover,
+.file-tab-remove:hover {
+  color: var(--text);
+}
+
 /* fields.ts renders these class names but ships no CSS of its own -- each
  * host app supplies its own (grid-sequencer's src/main.css has the fuller
  * version this is adapted from). */
@@ -216,6 +269,11 @@ input[type="file"] {
   stroke-width: 2;
   rx: 6;
   transition: fill 0.15s ease;
+  cursor: grab;
+}
+
+.patch-graph-node-box:active {
+  cursor: grabbing;
 }
 
 .patch-graph-node-flash {
@@ -225,6 +283,11 @@ input[type="file"] {
 .patch-graph-node-label {
   font-size: 11px;
   font-family: system-ui, sans-serif;
+  cursor: grab;
+}
+
+.patch-graph-node-label:active {
+  cursor: grabbing;
 }
 
 .patch-graph-port {
@@ -252,6 +315,14 @@ input[type="file"] {
 .patch-graph-edge:hover {
   stroke: #ff6b9d;
   stroke-width: 3;
+}
+
+.patch-graph-edge-probability {
+  font-size: 9px;
+  fill: var(--text-muted);
+  font-family: system-ui, sans-serif;
+  text-anchor: middle;
+  pointer-events: none;
 }
 
 .patch-graph-drag-line {
@@ -541,6 +612,43 @@ input[type="file"] {
   text-align: left;
   font-weight: 600;
   color: var(--text);
+}
+
+.preset-list {
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.preset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.preset-row:last-child {
+  border-bottom: none;
+}
+
+.preset-row-name {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.preset-row-date {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.preset-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
 }
 
 .motion-config-grid thead th,
