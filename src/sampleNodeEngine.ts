@@ -585,11 +585,11 @@ export class SampleNodeEngine {
    *
    * A no-op while disarmed ("off" in the node menu's own header toggle),
    * regardless of *how* trigger() was reached -- a manual click
-   * (main.ts's own Trigger button), a loop-armed node's next due tick,
-   * or a graph-cascaded edge (emitEvent calls this same method) are all
-   * silenced the same way, since this is the one place all three paths
-   * converge. fireNow() is a deliberate exception: it's documented as
-   * bypassing arm/trigger entirely, so it stays unaffected by armed.
+   * (main.ts's own Trigger button, or the patch graph's own per-node fire
+   * glyph, see patchGraph.ts's onFireNow), a loop-armed node's next due
+   * tick, or a graph-cascaded edge (emitEvent calls this same method) are
+   * all silenced the same way, since this is the one place all four
+   * paths converge.
    *
    * Every fire's own time is computed in a first pass (gaps depend only
    * on intervalCurve/fireCount/triggerPeriodSeconds, never on duration)
@@ -938,50 +938,6 @@ export class SampleNodeEngine {
     this.reconcileLfoConnection(id);
   }
 
-  /** Immediate, direct fire -- bypasses arm/trigger/firing-pattern
-   * entirely, always exactly one fire using whatever range is live right
-   * now. Kept distinct from trigger() for callers (like the UI's per-node
-   * "Fire" escape hatch) that want a guaranteed single sound regardless
-   * of the node's own configured firing pattern. */
-  fireNow(id: string): number | null {
-    const node = this.nodes.get(id);
-    const runtime = this.runtime.get(id);
-    const audio = this.audio.get(id);
-    if (!node || !runtime || !audio || !this.files.has(node.fileId)) {
-      return null;
-    }
-    const range = runtime.liveRange;
-    const direction = this.resolveDirection(node, runtime);
-    const rateMultiplier = clampRateMultiplier(
-      this.evaluateMotion(
-        node.rateMotion,
-        runtime.rateWander,
-        this.audioContext.currentTime,
-        runtime.lastTriggerAt,
-        node.triggerPeriodSeconds,
-        runtime.triggerIndex,
-        1,
-      ),
-    );
-    const envelopeGain = this.computeEnvelopeGain(
-      node,
-      runtime,
-      this.audioContext.currentTime,
-      runtime.triggerIndex,
-    );
-    return audio.player.playVoice({
-      startFraction: range.start,
-      endFraction: range.end,
-      direction,
-      fadeMs: node.fadeMs,
-      envelopeCurve: node.envelopeMotion.fireEnabled
-        ? node.envelopeMotion.fireCurvePoints
-        : undefined,
-      gain: envelopeGain,
-      rateSemitones: 12 * Math.log2(rateMultiplier),
-    });
-  }
-
   private resolveDirection(
     node: SampleNode,
     runtime: NodeRuntime,
@@ -1135,8 +1091,8 @@ export class SampleNodeEngine {
     fallback: number,
   ): number {
     // How far in the future (or, for a live/present-time call like
-    // tick()'s own overlay or fireNow(), effectively zero) atTime is from
-    // right now, in wall-clock ms -- see projectWander's own doc comment
+    // tick()'s own overlay, effectively zero) atTime is from right now,
+    // in wall-clock ms -- see projectWander's own doc comment
     // for why wander specifically needs this and every other domain
     // here doesn't.
     const wanderDtMs = (atTime - this.audioContext.currentTime) * 1000;
@@ -1217,9 +1173,9 @@ export class SampleNodeEngine {
    * reach the final sound through entirely different paths -- Continuous
    * via envelopeGain's own ongoing AudioParam automation
    * (reconcileEnvelopeContinuous), Fire via a per-voice lookup table sent
-   * straight to playVoice's own envelopeCurve option (see trigger()/
-   * fireNow()) -- summing either into this baked scalar too would double
-   * them up. Returns 1 (neutral) when neither useFixed nor during/across
+   * straight to playVoice's own envelopeCurve option (see trigger()'s own
+   * per-fire loop) -- summing either into this baked scalar too would
+   * double them up. Returns 1 (neutral) when neither useFixed nor during/across
    * is on, same fallback convention every other MotionConfig call uses. */
   private computeEnvelopeGain(
     node: SampleNode,

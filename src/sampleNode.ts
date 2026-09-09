@@ -379,8 +379,8 @@ export interface SampleNode {
    *   MotionConfig's fireEnabled is.
    * `useWander` still layers on top of whichever of the above is active,
    * same orthogonal "noise source" role it plays for position/duration/
-   * rate -- see SampleNodeEngine.trigger()/fireNow() for exactly how
-   * these four combine into one fire's own final gain. */
+   * rate -- see SampleNodeEngine.trigger() for exactly how these four
+   * combine into one fire's own final gain. */
   envelopeMotion: MotionConfig;
 
   armMode: ArmMode;

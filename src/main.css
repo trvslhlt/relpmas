@@ -291,6 +291,25 @@ input[type="file"] {
   cursor: grabbing;
 }
 
+.patch-graph-node-fire {
+  fill: #2c313a;
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  cursor: pointer;
+  transition: fill 0.15s ease;
+}
+
+.patch-graph-node-fire:hover {
+  fill: var(--accent);
+}
+
+.patch-graph-node-fire-glyph {
+  font-size: 9px;
+  fill: var(--text-muted);
+  font-family: system-ui, sans-serif;
+  pointer-events: none;
+}
+
 .patch-graph-port {
   cursor: crosshair;
 }

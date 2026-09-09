@@ -36,8 +36,6 @@ const duplicateNodeButtonEl =
   document.querySelector<HTMLButtonElement>("#duplicate-node")!;
 const removeNodeButtonEl =
   document.querySelector<HTMLButtonElement>("#remove-node")!;
-const fireNodeButtonEl =
-  document.querySelector<HTMLButtonElement>("#fire-node")!;
 const triggerNodeButtonEl =
   document.querySelector<HTMLButtonElement>("#trigger-node")!;
 const savePresetButtonEl =
@@ -196,6 +194,11 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     // The graph is the one place left a node can be selected now that
     // the separate node-list is gone (see selectNode's own doc comment).
     onSelect: (id) => selectNode(id, { openMenu: true }),
+    // Same trigger() every other manual/cascaded fire goes through (see
+    // its own doc comment) -- this used to be a toolbar button calling
+    // engine.fireNow(), which bypassed arm/trigger/cascade entirely and
+    // so could never kick off a chain of edges on its own.
+    onFireNow: (id) => engine.trigger(id),
   });
 
   function syncPatchGraph(): void {
@@ -371,7 +374,6 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
     const disabled = selectedId === null;
     duplicateNodeButtonEl.disabled = disabled;
     removeNodeButtonEl.disabled = disabled;
-    fireNodeButtonEl.disabled = disabled;
     triggerNodeButtonEl.disabled = disabled;
     savePresetButtonEl.disabled = disabled;
     addNodeButtonEl.disabled = activeFileId === null;
@@ -615,11 +617,6 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
 
     document.body.appendChild(overlay);
   }
-
-  fireNodeButtonEl.addEventListener("click", () => {
-    if (!selectedId) return;
-    engine.fireNow(selectedId);
-  });
 
   triggerNodeButtonEl.addEventListener("click", () => {
     if (!selectedId) return;

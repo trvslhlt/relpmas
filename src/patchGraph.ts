@@ -58,6 +58,15 @@ export interface PatchGraphViewOptions {
    * (see suppressNextClick) when the same pointerdown/up actually
    * dragged the node instead of clicking it. */
   onSelect?: (id: string) => void;
+  /** Fired by a click on a node's own bottom-left fire glyph -- a manual,
+   * one-node-at-a-time trigger the same shape as main.ts's own toolbar
+   * "Trigger (pattern)" button, just reachable without selecting the node
+   * first. Deliberately not its own bypass-everything "immediate" fire
+   * (that used to be a separate engine.fireNow() call, which skipped
+   * arm/trigger and so could never cascade to other nodes over an edge)
+   * -- a host app should wire this straight to the same trigger(id) the
+   * toolbar button uses. */
+  onFireNow?: (id: string) => void;
 }
 
 export interface PatchGraphViewHandle {
@@ -444,6 +453,32 @@ export function createPatchGraphView(
         startNodeDrag(event, node),
       );
       group.appendChild(label);
+
+      // Bottom-left fire glyph -- a circle hit-target (same "circle plus
+      // its own listener" shape as the in/out ports below) with a
+      // pointer-events:none glyph drawn on top, rather than relying on
+      // the text glyph's own tight bounding box as the hit area. Its own
+      // click listener stops propagation so it doesn't also bubble up to
+      // the group's click (which would select the node and, since
+      // onSelect opens the full node menu, pop that open on every fire).
+      const fireButton = document.createElementNS(SVG_NS, "circle");
+      fireButton.setAttribute("class", "patch-graph-node-fire");
+      fireButton.setAttribute("cx", "14");
+      fireButton.setAttribute("cy", String(BOX_HEIGHT - 14));
+      fireButton.setAttribute("r", "9");
+      fireButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        options.onFireNow?.(node.id);
+      });
+      group.appendChild(fireButton);
+
+      const fireGlyph = document.createElementNS(SVG_NS, "text");
+      fireGlyph.setAttribute("class", "patch-graph-node-fire-glyph");
+      fireGlyph.setAttribute("x", "14");
+      fireGlyph.setAttribute("y", String(BOX_HEIGHT - 10));
+      fireGlyph.setAttribute("text-anchor", "middle");
+      fireGlyph.textContent = "▶";
+      group.appendChild(fireGlyph);
 
       const inPort = document.createElementNS(SVG_NS, "circle");
       inPort.setAttribute("class", "patch-graph-port patch-graph-in-port");
