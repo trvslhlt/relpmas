@@ -20,6 +20,12 @@
 // startFraction, wrapping the other way). Buffer indexing is done modulo
 // frameCount every sample, so this one formula covers both the wrapped and
 // non-wrapped cases with no special-casing.
+//
+// A wrapped fragment's buffer-index rollover (frameCount-1 back around to
+// 0, or the reverse reading backward) is a real, separate click source
+// from the fragment's own start/end, which fadeMs/fadeFrames alone don't
+// cover -- see applyEvent's own wrapAtFrame and render()'s gain dip around
+// it.
 
 class DirectionalSampleProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -112,6 +118,35 @@ class DirectionalSampleProcessor extends AudioWorkletProcessor {
         0,
         Math.round(((ev.fadeMs ?? 4) / 1000) * sampleRate),
       );
+      // Elapsed-frame position (in this voice's own timeline, same units
+      // as `elapsed`/`totalFrames` below) at which the buffer index itself
+      // wraps from one end to the other -- null if this particular voice's
+      // span never actually reaches the buffer boundary. fadeFrames'
+      // start/end declick (see render()'s own fadeIn/fadeOut) has no idea
+      // this moment exists: it's keyed off elapsed/totalFrames, which say
+      // nothing about *where in the buffer* a voice currently is. Without
+      // this, a wrapped fragment (startFraction > endFraction, see the
+      // module doc comment) jumps from this.left[n-1]/right[n-1] straight
+      // to this.left[0]/right[0] mid-voice with zero mitigation -- two
+      // arbitrary, unrelated sample values, an audible click distinct from
+      // (and in addition to) whatever's happening at the fragment's own
+      // edges. Derived once here, not per-sample: a voice's total travel
+      // distance is exactly spanFrames (< n by construction, see spanFrames
+      // above), so it can cross at most one buffer-boundary multiple of n
+      // during its entire lifetime -- there's never more than one wrap
+      // point to find.
+      let wrapAtFrame = null;
+      if (ev.direction === "backward") {
+        // Backward reads start at endFrame and descend; wraps past index 0
+        // (back around to n) if the descent would go negative.
+        if (spanFrames > endFrame) wrapAtFrame = endFrame / rate;
+      } else {
+        // Forward reads start at startFrame and ascend; wraps past index
+        // n-1 (back around to 0) if the ascent would reach n.
+        if (startFrame + spanFrames > n) {
+          wrapAtFrame = (n - startFrame) / rate;
+        }
+      }
       this.voices.push({
         id: ev.id,
         pos: ev.direction === "backward" ? endFrame : startFrame,
@@ -119,6 +154,7 @@ class DirectionalSampleProcessor extends AudioWorkletProcessor {
         elapsed: 0,
         totalFrames: spanFrames / rate,
         fadeFrames,
+        wrapAtFrame,
         envelopeTable: ev.envelopeTable,
         gain: ev.gain ?? 1,
         stopping: false,
@@ -173,6 +209,21 @@ class DirectionalSampleProcessor extends AudioWorkletProcessor {
         const fadeOut =
           voice.fadeFrames > 0 ? Math.min(1, remaining / voice.fadeFrames) : 1;
         let gain = Math.min(fadeIn, fadeOut);
+
+        // A second, independent dip -- not a crossfade of buffer content,
+        // just a brief linear duck to (and back up from) zero, same
+        // technique as fadeIn/fadeOut above but centered on wrapAtFrame
+        // instead of the fragment's own start/end. Scaling the whole
+        // waveform toward zero right at the discontinuity scales the
+        // *size* of the jump too, which is what actually makes it far
+        // less audible -- the samples on either side of the seam are
+        // still whatever arbitrary values they are, this doesn't smooth
+        // them. A no-op (multiplies by 1) for the large majority of
+        // voices, whose span never reaches the buffer boundary at all.
+        if (voice.wrapAtFrame !== null && voice.fadeFrames > 0) {
+          const distanceFromWrap = Math.abs(voice.elapsed - voice.wrapAtFrame);
+          gain *= Math.min(1, distanceFromWrap / voice.fadeFrames);
+        }
 
         // Independent of, and multiplied together with, fadeIn/fadeOut
         // above -- fadeFrames is a fast fixed anti-click ramp at each end,
