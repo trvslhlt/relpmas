@@ -270,7 +270,7 @@ export function createNodeMenu(
   } {
     const details = document.createElement("details");
     details.className = "node-menu-section";
-    details.open = true;
+    details.open = false;
     const summary = document.createElement("summary");
     summary.className = "node-menu-section-summary";
     summary.textContent = title;
