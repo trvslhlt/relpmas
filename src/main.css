@@ -2,6 +2,7 @@
 @import "bruit-kit/ui/zoomableWaveformRangeView.css";
 @import "bruit-kit/ui/automationEditor.css";
 @import "bruit-kit/ui/sliderControl.css";
+@import "bruit-kit/ui/knob.css";
 
 :root {
   color-scheme: dark;

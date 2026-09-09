@@ -333,6 +333,28 @@ export interface SampleNode {
    * comment on how the two combine: multiplied together, not one
    * replacing the other). */
   fadeMs: number;
+  /** Per-node override of the declick-fade knob's own min/max, set via
+   * that knob's own right-click menu -- absent means the knob's default
+   * 0-50ms range. */
+  fadeMsRange?: { min: number; max: number };
+  /** Per-node override of the declick-fade knob's own scale, set the
+   * same way -- absent means linear. */
+  fadeMsScale?: "linear" | "log";
+  /** Per-node override of a motion-field slider's own min/max, set via
+   * that slider's own right-click menu (see fields.ts's onBoundsChange) --
+   * keyed by the same field `key` string nodeMenu.ts's motionFields()
+   * already builds for each one (e.g. "rateMotion-wanderSpeed"), unlike
+   * fadeMs's own dedicated fadeMsRange/fadeMsScale pair above: there are
+   * ~20 of these sliders (5 per motion category x 4 categories), so a
+   * generic keyed map is the same shape effect params already use
+   * (EffectSpec.paramRanges/paramScales in bruit-kit), not a new pattern,
+   * just applied at the node level instead of the per-effect-instance
+   * level. Absent (or missing a given key) falls back to that field's
+   * own hardcoded default range. */
+  fieldRanges?: Record<string, { min: number; max: number }>;
+  /** Per-node override of a motion-field slider's own scale, set the same
+   * way -- absent (or missing a given key) means linear. */
+  fieldScales?: Record<string, "linear" | "log">;
   /** A 4th MotionConfig, alongside position/duration/rate, but each of
    * its four grid categories (see MOTION_ROWS in nodeMenu.ts) means
    * something genuinely different here rather than reusing
@@ -362,6 +384,13 @@ export interface SampleNode {
 
   armMode: ArmMode;
   triggerPeriodSeconds: number;
+  /** Per-node override of the trigger-period slider's own min/max, set
+   * via that slider's own right-click menu -- absent means the slider's
+   * default 0.1-10s range. */
+  triggerPeriodRange?: { min: number; max: number };
+  /** Per-node override of the trigger-period slider's own scale, set the
+   * same way -- absent means linear. */
+  triggerPeriodScale?: "linear" | "log";
 
   firingPattern: FiringPattern;
   fireCount: number;

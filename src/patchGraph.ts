@@ -12,6 +12,7 @@
 // `render()` rebuild on every pointermove; `render()` stays the rebuild
 // path for genuinely structural changes (nodes/edges added or removed).
 
+import { createKnob } from "bruit-kit/ui";
 import type { NodeEventType } from "./sampleNodeEngine";
 
 export interface PatchGraphNode {
@@ -26,6 +27,14 @@ export interface PatchGraphEdge {
   fromEvent: NodeEventType;
   toNodeId: string;
   probability: number;
+  /** Per-edge override of the probability knob's own min/max (0-100,
+   * i.e. percent) and scale, set via that knob's own right-click menu --
+   * see GraphEdge's own doc comment on these two (sampleNodeEngine.ts):
+   * setEdges passes the engine's own edge objects straight through, so
+   * mutating these here (see openProbabilityPopup) already is mutating
+   * the engine's own state, same as `probability` itself already does. */
+  probabilityRange?: { min: number; max: number };
+  probabilityScale?: "linear" | "log";
 }
 
 export interface PatchGraphViewOptions {
@@ -301,22 +310,28 @@ export function createPatchGraphView(
     row.className = "panel-field";
     const fieldLabel = document.createElement("label");
     fieldLabel.textContent = "Fires";
-    const slider = document.createElement("input");
-    slider.type = "range";
-    slider.min = "0";
-    slider.max = "100";
-    slider.value = String(Math.round(edge.probability * 100));
-    const valueEl = document.createElement("span");
-    valueEl.className = "field-value";
-    valueEl.textContent = `${slider.value}%`;
-    slider.addEventListener("input", () => {
-      valueEl.textContent = `${slider.value}%`;
-      const probability = Number(slider.value) / 100;
-      edge.probability = probability;
-      refreshEdgeVisual(edge.id);
-      options.onSetProbability(edge.id, probability);
+    const knobEl = document.createElement("div");
+    createKnob(knobEl, {
+      value: Math.round(edge.probability * 100),
+      min: edge.probabilityRange?.min ?? 0,
+      max: edge.probabilityRange?.max ?? 100,
+      step: 1,
+      scale: edge.probabilityScale ?? "linear",
+      initialValue: 100,
+      onChange: (value) => {
+        const probability = value / 100;
+        edge.probability = probability;
+        refreshEdgeVisual(edge.id);
+        options.onSetProbability(edge.id, probability);
+      },
+      onBoundsChange: (min, max) => {
+        edge.probabilityRange = { min, max };
+      },
+      onScaleChange: (scale) => {
+        edge.probabilityScale = scale;
+      },
     });
-    row.append(fieldLabel, slider, valueEl);
+    row.append(fieldLabel, knobEl);
     body.appendChild(row);
     modal.appendChild(body);
 

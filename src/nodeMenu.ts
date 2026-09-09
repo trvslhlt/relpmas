@@ -23,6 +23,7 @@ import {
   createZoomableWaveformRangeView,
   effectsFields,
   renderFields,
+  renderRangeInput,
 } from "bruit-kit/ui";
 import {
   type LfoRoute,
@@ -308,21 +309,28 @@ export function createNodeMenu(
   // built once as plain DOM (like the header's own controls) rather than
   // through renderFields, since Field has no compound "range with an
   // inline button" kind and this is the only thing left in "General"
-  // needing one. updateTriggerPeriodDisplay keeps it in sync on every
-  // render() (node switch, etc.); the input's own "input" listener
-  // updates live during a drag without going through render() at all,
-  // same as every other range field.
+  // needing one. Label/row/button are the persistent part; the slider
+  // itself (triggerPeriodControlContainer's contents) is rebuilt fresh
+  // every render() instead, via bruit-kit/ui's own renderRangeInput (the
+  // same function every Field-kind "range" slider goes through) -- doing
+  // that instead of hand-rolling the <input> here is what gets this
+  // slider the same right-click "Value/Min/Max/Scale" menu every other
+  // slider has, without reimplementing scale-aware min/max handling
+  // locally. A fresh rebuild per render() (rather than reactively
+  // patching min/max/scale on a persistent element) matches how every
+  // other field in this panel already handles a bounds/scale commit.
   const triggerPeriodRow = document.createElement("div");
   triggerPeriodRow.className = "panel-field";
   const triggerPeriodLabel = document.createElement("label");
   triggerPeriodLabel.textContent = "Trigger period";
-  const triggerPeriodInput = document.createElement("input");
-  triggerPeriodInput.type = "range";
-  triggerPeriodInput.min = "0.1";
-  triggerPeriodInput.max = "10";
-  triggerPeriodInput.step = "0.1";
-  const triggerPeriodValue = document.createElement("span");
-  triggerPeriodValue.className = "field-value";
+  // display:contents -- a pure JS convenience wrapper (one node to clear
+  // and refill each render()), invisible to layout: .panel-field's own
+  // flex row treats this element's own children (input, valueEl) as if
+  // they were direct children, exactly matching every other slider row's
+  // flat label/input/valueEl/button structure instead of nesting an
+  // extra flex item between label and the snap button.
+  const triggerPeriodControlContainer = document.createElement("span");
+  triggerPeriodControlContainer.style.display = "contents";
   const triggerPeriodSnapButton = document.createElement("button");
   triggerPeriodSnapButton.type = "button";
   triggerPeriodSnapButton.className = "node-menu-snap-button";
@@ -337,16 +345,27 @@ export function createNodeMenu(
   // this snapped period.
   triggerPeriodSnapButton.title = "Snap trigger period to selection";
 
-  function updateTriggerPeriodDisplay(seconds: number): void {
-    triggerPeriodInput.value = String(seconds);
-    triggerPeriodValue.textContent = seconds.toFixed(1);
+  function renderTriggerPeriod(node: SampleNode): void {
+    triggerPeriodControlContainer.innerHTML = "";
+    const { input, valueEl } = renderRangeInput(
+      node.triggerPeriodSeconds,
+      node.triggerPeriodRange?.min ?? 0.1,
+      node.triggerPeriodRange?.max ?? 10,
+      0.1,
+      (value) => update({ triggerPeriodSeconds: value }),
+      node.triggerPeriodScale ?? "linear",
+      (min, max) => {
+        update({ triggerPeriodRange: { min, max } });
+        render();
+      },
+      (scale) => {
+        update({ triggerPeriodScale: scale });
+        render();
+      },
+    );
+    triggerPeriodControlContainer.append(input, valueEl);
   }
 
-  triggerPeriodInput.addEventListener("input", () => {
-    const value = Number(triggerPeriodInput.value);
-    triggerPeriodValue.textContent = value.toFixed(1);
-    update({ triggerPeriodSeconds: value });
-  });
   triggerPeriodSnapButton.addEventListener("click", () => {
     if (!currentId) return;
     const node = engine.getNode(currentId);
@@ -354,13 +373,12 @@ export function createNodeMenu(
     const seconds = selectionDurationSeconds(node);
     if (seconds === null) return;
     update({ triggerPeriodSeconds: seconds });
-    updateTriggerPeriodDisplay(seconds);
+    render();
   });
 
   triggerPeriodRow.append(
     triggerPeriodLabel,
-    triggerPeriodInput,
-    triggerPeriodValue,
+    triggerPeriodControlContainer,
     triggerPeriodSnapButton,
   );
   generalSection.body.appendChild(triggerPeriodRow);
@@ -703,6 +721,64 @@ export function createNodeMenu(
       render();
     };
 
+    // Backs every motion-field slider's own right-click "Value / Min /
+    // Max / Scale" menu (see fields.ts's control/scale/onBoundsChange/
+    // onScaleChange) -- one generic keyed map per node (SampleNode's own
+    // fieldRanges/fieldScales) rather than a dedicated pair of fields per
+    // slider the way fadeMs has, since there are ~20 of these across the
+    // four motion categories. Same freshest-node-read reasoning as
+    // updateMotion above (a spread of the stale closured node would
+    // silently drop whatever an earlier field's own bounds/scale commit
+    // in this same visit had just set), and a bounds/scale commit does
+    // need its own render() (unlike a plain value commit): the slider's
+    // own min/max attributes only come from this field list being
+    // rebuilt, not from any live update the <input> does on its own.
+    const fieldRange = (
+      fieldKey: string,
+      fallbackMin: number,
+      fallbackMax: number,
+    ): { min: number; max: number } => {
+      const current = engine.getNode(node.id) ?? node;
+      return (
+        current.fieldRanges?.[fieldKey] ?? {
+          min: fallbackMin,
+          max: fallbackMax,
+        }
+      );
+    };
+    const fieldScale = (fieldKey: string): "linear" | "log" => {
+      const current = engine.getNode(node.id) ?? node;
+      return current.fieldScales?.[fieldKey] ?? "linear";
+    };
+    const commitFieldRange = (fieldKey: string, min: number, max: number) => {
+      const current = engine.getNode(node.id) ?? node;
+      update({
+        fieldRanges: { ...current.fieldRanges, [fieldKey]: { min, max } },
+      });
+      render();
+    };
+    const commitFieldScale = (fieldKey: string, scale: "linear" | "log") => {
+      const current = engine.getNode(node.id) ?? node;
+      update({ fieldScales: { ...current.fieldScales, [fieldKey]: scale } });
+      render();
+    };
+    const boundsFieldProps = (
+      fieldKey: string,
+      fallbackMin: number,
+      fallbackMax: number,
+    ) => {
+      const range = fieldRange(fieldKey, fallbackMin, fallbackMax);
+      return {
+        min: range.min,
+        max: range.max,
+        scale: fieldScale(fieldKey),
+        onBoundsChange: (min: number, max: number) =>
+          commitFieldRange(fieldKey, min, max),
+        onScaleChange: (scale: "linear" | "log") =>
+          commitFieldScale(fieldKey, scale),
+      };
+    };
+
     const triggerActive =
       config.duringTriggerEnabled || config.acrossTriggersEnabled;
 
@@ -726,10 +802,9 @@ export function createNodeMenu(
               label: `${labelPrefix} wander speed`,
               kind: "range" as const,
               value: config.wanderSpeed,
-              min: 0,
-              max: 1,
               step: 0.01,
               indented: true,
+              ...boundsFieldProps(`${key}-wanderSpeed`, 0, 1),
               onChange: (value: number) => updateMotion({ wanderSpeed: value }),
             },
           ]
@@ -743,9 +818,12 @@ export function createNodeMenu(
           label: `${labelPrefix} fixed value`,
           kind: "range",
           value: config.fixedValue,
-          min: fixedValueMin,
-          max: fixedValueMax,
           step: valueStep,
+          ...boundsFieldProps(
+            `${key}-fixedValue`,
+            fixedValueMin,
+            fixedValueMax,
+          ),
           onChange: (value) => updateMotion({ fixedValue: value }),
         },
         ...wanderFields,
@@ -758,9 +836,8 @@ export function createNodeMenu(
         label: `${labelPrefix} min`,
         kind: "range",
         value: config.min,
-        min: valueMin,
-        max: valueMax,
         step: valueStep,
+        ...boundsFieldProps(`${key}-min`, valueMin, valueMax),
         onChange: (value) => updateMotion({ min: value }),
       },
       {
@@ -768,9 +845,8 @@ export function createNodeMenu(
         label: `${labelPrefix} max`,
         kind: "range",
         value: config.max,
-        min: valueMin,
-        max: valueMax,
         step: valueStep,
+        ...boundsFieldProps(`${key}-max`, valueMin, valueMax),
         onChange: (value) => updateMotion({ max: value }),
       },
       // "During" and "across" are mutually exclusive, not independent
@@ -839,10 +915,9 @@ export function createNodeMenu(
               label: `${labelPrefix} continuous loop length (s)`,
               kind: "range",
               value: config.continuousLoopSeconds,
-              min: 0.5,
-              max: 20,
               step: 0.5,
               indented: true,
+              ...boundsFieldProps(`${key}-continuousLoopSeconds`, 0.5, 20),
               onChange: (value: number) =>
                 updateMotion({ continuousLoopSeconds: value }),
             },
@@ -1096,10 +1171,15 @@ export function createNodeMenu(
         label: "Declick fade (ms)",
         kind: "range",
         value: node.fadeMs,
-        min: 0,
-        max: 50,
+        min: node.fadeMsRange?.min ?? 0,
+        max: node.fadeMsRange?.max ?? 50,
         step: 1,
+        control: "knob",
+        scale: node.fadeMsScale ?? "linear",
+        initialValue: 4,
         onChange: (value) => update({ fadeMs: value }),
+        onBoundsChange: (min, max) => update({ fadeMsRange: { min, max } }),
+        onScaleChange: (scale) => update({ fadeMsScale: scale }),
       },
     ];
   }
@@ -1228,7 +1308,7 @@ export function createNodeMenu(
     swatch.style.background = node.color;
     title.textContent = node.label;
     updateArmToggleVisual();
-    updateTriggerPeriodDisplay(node.triggerPeriodSeconds);
+    renderTriggerPeriod(node);
 
     ensureWaveform(node);
 

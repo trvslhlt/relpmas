@@ -51,6 +51,15 @@ export interface GraphEdge {
    * so a probability of exactly 1 is mathematically guaranteed to pass,
    * not just "almost always." */
   probability: number;
+  /** Per-edge override of the probability knob's own min/max (0-100,
+   * i.e. percent), set via that knob's own right-click menu -- absent
+   * means the knob's default 0-100 range. No whole-patch persistence
+   * exists for edges at all yet (same as `probability` itself), so this
+   * is only as durable as the edge object's own in-memory lifetime. */
+  probabilityRange?: { min: number; max: number };
+  /** Per-edge override of the probability knob's own scale, set the
+   * same way -- absent means linear. */
+  probabilityScale?: "linear" | "log";
 }
 
 interface WanderState {
