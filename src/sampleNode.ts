@@ -504,27 +504,54 @@ export function createLfoRoute(): LfoRoute {
 
 let nextId = 1;
 
-export function createSampleNode(color: string, fileId: string): SampleNode {
+/** How long a brand-new node's selection (and, to match it, its trigger
+ * period -- see triggerPeriodSeconds below) starts out, in seconds. */
+const DEFAULT_SELECTION_SECONDS = 2;
+
+/** fileDurationSeconds is the assigned file's own AudioBuffer.duration, or
+ * null if it's not known yet (e.g. still decoding) -- range.end is derived
+ * from it so a new node's selection starts at a fixed real-world length
+ * (DEFAULT_SELECTION_SECONDS) rather than a fixed fraction of whatever
+ * buffer happens to be active, clamped to the buffer's own full length if
+ * it's shorter. Falls back to a plain 0.05 fraction (1/20th of the track)
+ * when the duration isn't known, same reasoning as the old fixed-fraction
+ * default this replaces. */
+export function createSampleNode(
+  color: string,
+  fileId: string,
+  fileDurationSeconds: number | null,
+): SampleNode {
   const id = `node-${nextId++}`;
+  // Capped just under 1, not at 1 -- range.start === range.end (which a
+  // fraction of exactly 1 would wrap back around to) means a zero-length
+  // selection, not "the whole buffer" (see WaveformRange's own doc
+  // comment on wrappedLength), so a file no longer than
+  // DEFAULT_SELECTION_SECONDS would otherwise collapse to nothing here.
+  const rangeLength =
+    fileDurationSeconds && fileDurationSeconds > 0
+      ? Math.min(1 - 1e-6, DEFAULT_SELECTION_SECONDS / fileDurationSeconds)
+      : 0.05;
+  // Same "same length in seconds as the selection" pairing "Snap to
+  // selection" already offers by hand in nodeMenu.ts -- clamped down
+  // alongside rangeLength above when the file itself is shorter than
+  // DEFAULT_SELECTION_SECONDS, so the two stay equal either way.
+  const triggerPeriodSeconds =
+    fileDurationSeconds && fileDurationSeconds > 0
+      ? Math.min(DEFAULT_SELECTION_SECONDS, fileDurationSeconds)
+      : DEFAULT_SELECTION_SECONDS;
   return {
     id,
     label: id,
     color,
     fileId,
-    // 1/20th of the track (0.05, a plain fraction -- always exactly this
-    // regardless of the buffer's own actual duration, unlike a fixed
-    // seconds value which would need the buffer's length on hand at
-    // creation time). A smaller, more workable starting point than the
-    // old 0.4-length default -- easy to nudge from here rather than
-    // starting nearly half the track wide.
-    range: { start: 0.1, end: 0.15 },
+    range: { start: 0.1, end: wrapFraction(0.1 + rangeLength) },
     direction: "forward",
     rateMotion: createRateMotion(),
     fadeMs: 4,
     envelopeMotion: createEnvelopeMotion(),
 
     armMode: "manual",
-    triggerPeriodSeconds: 0.5,
+    triggerPeriodSeconds,
 
     firingPattern: "single",
     fireCount: 10,

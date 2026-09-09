@@ -449,7 +449,9 @@ unlockAudioContext(unlockEl).then(async (audioContext) => {
   addNodeButtonEl.addEventListener("click", async () => {
     if (!activeFileId) return;
     const color = NODE_COLORS[engine.listNodes().length % NODE_COLORS.length];
-    const node = createSampleNode(color, activeFileId);
+    const fileDurationSeconds =
+      engine.getBuffer(activeFileId)?.duration ?? null;
+    const node = createSampleNode(color, activeFileId, fileDurationSeconds);
     await engine.addNode(node);
     syncWaveformEntries();
     syncPatchGraph();
