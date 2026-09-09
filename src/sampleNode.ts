@@ -310,10 +310,11 @@ export interface SampleNode {
    * node's own range/motion below apply to -- each node has its own
    * DirectionalSamplePlayer, so nodes can each point at a different file
    * and still all patch/cascade together normally. Reassignable live via
-   * SampleNodeEngine.setNodeFile; `range`'s fractions carry over
-   * unchanged across a reassignment (see setNodeFile's own doc comment),
-   * same "portable fraction" reasoning duplicateSampleNode/node presets
-   * already rely on. */
+   * SampleNodeEngine.setNodeFile; `range`'s start fraction carries over
+   * unchanged across a reassignment, but its length is converted to hold
+   * the same duration in seconds against the new file (see setNodeFile's
+   * own doc comment) rather than the same fraction of a buffer that may
+   * be a very different length. */
   fileId: string;
   /** 0..1 fractions of this node's own file's duration -- the base range
    * range motion (below) moves away from and returns to being the default

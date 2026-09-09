@@ -359,16 +359,30 @@ export class SampleNodeEngine {
   /** Reassigns a node to a different loaded file -- reloads that node's
    * own already-existing player (each node has one of its own, see
    * NodeAudio) with the new buffer, same as addNode does for a node's
-   * initial file. `node.range`'s fractions are left exactly as they are:
-   * a fraction is portable across buffers of any length, same "no
+   * initial file. `node.range`'s *start* fraction is left exactly as it
+   * is (a fraction is portable across buffers of any length, same "no
    * buffer-specific data baked in" reasoning duplicateSampleNode/node
-   * presets already rely on. A no-op if the file doesn't exist. */
+   * presets already rely on), but its *length* is converted to hold the
+   * same duration in seconds across the swap rather than the same
+   * fraction of the buffer -- a selection made against a 2s file
+   * shouldn't silently become a 40s selection just because the node got
+   * pointed at a 40x longer file. Clamped to the new file's own full
+   * length if the old selection's seconds no longer fit. A no-op if the
+   * file doesn't exist. */
   async setNodeFile(id: string, fileId: string): Promise<void> {
     const node = this.nodes.get(id);
     const audio = this.audio.get(id);
+    const oldFile = this.files.get(node?.fileId ?? "");
     const file = this.files.get(fileId);
     if (!node || !audio || !file) return;
     await audio.player.loadSample(file.buffer);
+    if (oldFile && oldFile.buffer.duration > 0 && file.buffer.duration > 0) {
+      const lengthSeconds =
+        wrappedLength(node.range.start, node.range.end) *
+        oldFile.buffer.duration;
+      const lengthFraction = Math.min(1, lengthSeconds / file.buffer.duration);
+      node.range.end = wrapFraction(node.range.start + lengthFraction);
+    }
     node.fileId = fileId;
   }
 
