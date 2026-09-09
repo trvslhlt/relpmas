@@ -110,7 +110,18 @@ export function createPatchGraphView(
   container: HTMLDivElement,
   options: PatchGraphViewOptions,
 ): PatchGraphViewHandle {
-  const width = options.width ?? 720;
+  // Refreshed from the container's own actual rendered width every
+  // resizeCanvas() call, not held fixed at options.width -- the svg
+  // element's own CSS width is 100% of its container (see
+  // .patch-graph-svg), which on any container wider than the old fixed
+  // 720 fallback left the viewBox's horizontal scale and its (correctly
+  // 1:1) vertical scale mismatched. preserveAspectRatio="none" then
+  // stretched everything non-uniformly to fill that gap -- invisible on
+  // plain rectangles/lines, but squashed text and the fire glyph's
+  // circle into visibly flattened ellipses. options.width is still the
+  // fallback for the very first measurement, before the container has
+  // been laid out and clientWidth would read 0.
+  let width = options.width ?? 720;
 
   let nodes: PatchGraphNode[] = [];
   let edges: PatchGraphEdge[] = [];
@@ -226,6 +237,16 @@ export function createPatchGraphView(
       maxY = Math.max(maxY, origin.y + BOX_HEIGHT);
     }
     return Math.max(BOX_HEIGHT + GAP * 2, maxY + GAP);
+  }
+
+  // clientWidth is 0 before the container's first layout pass (e.g. a
+  // hidden panel) -- keep the previous/fallback width rather than
+  // collapsing the grid/viewBox to 0 for a frame. Called before
+  // refreshOrigins() in render() (see below), not just resizeCanvas()
+  // itself, so a container-width change also reflows columns()/
+  // gridOrigin() in the same pass rather than lagging a render behind.
+  function measureWidth(): void {
+    width = container.clientWidth || width;
   }
 
   function resizeCanvas(): void {
@@ -376,6 +397,7 @@ export function createPatchGraphView(
   }
 
   function render(): void {
+    measureWidth();
     refreshOrigins();
     resizeCanvas();
 
