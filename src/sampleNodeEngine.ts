@@ -396,7 +396,11 @@ export class SampleNodeEngine {
    * changes. Reloads each such node's own already-existing player with the
    * new buffer, same as setNodeFile does for a single node. A no-op if the
    * file doesn't exist. */
-  async replaceFile(id: string, buffer: AudioBuffer, label?: string): Promise<void> {
+  async replaceFile(
+    id: string,
+    buffer: AudioBuffer,
+    label?: string,
+  ): Promise<void> {
     const file = this.files.get(id);
     if (!file) return;
     file.buffer = buffer;
