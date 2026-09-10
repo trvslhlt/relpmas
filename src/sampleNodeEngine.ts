@@ -418,7 +418,16 @@ export class SampleNodeEngine {
   async addNode(node: SampleNode): Promise<void> {
     this.nodes.set(node.id, node);
     this.runtime.set(node.id, {
-      armed: false,
+      // Armed (not "Off") by default -- armed/armMode isn't part of the
+      // persisted SampleNode data at all (see NodeRuntime's own doc
+      // comment), so every path through addNode (a brand-new node,
+      // duplicateSampleNode, a loaded preset) used to land on "Off"
+      // regardless of node.armMode, meaning a fresh node did nothing at
+      // all -- not a manual click, not a cascaded edge -- until arming
+      // it by hand first. node.armMode itself already defaults to
+      // "manual" (see createSampleNode), so this just lets that default
+      // actually take effect from the start.
+      armed: true,
       nextTriggerAt: null,
       lastTriggerAt: this.audioContext.currentTime,
       triggerIndex: 0,
